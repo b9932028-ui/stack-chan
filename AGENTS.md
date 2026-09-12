@@ -102,7 +102,7 @@ USB is an optional control and observation path, not the animation scheduler. Ke
 
 Add future ChyMOD controls through the descriptor and namespaced request/response protocol instead of adding feature-specific switches to the default firmware USB server. Preserve the existing `stackchan-usb-v1` handshake and request IDs so multiple controls can share the serial connection safely.
 
-The web page must render controls from `chymod.describe`, display live state from `chymod.status`, and remain usable when capabilities are unavailable by showing a clear disconnected or unsupported state. Keep English, Japanese, and Simplified Chinese catalogs in sync for any new visible labels.
+The web page must render controls from `chymod.describe`, display live state from `chymod.status`, and remain usable when capabilities are unavailable by showing a clear disconnected or unsupported state. For backend/web UI updates, add and maintain English copy only. Do not update Japanese or Simplified Chinese translations unless the user explicitly requests them.
 
 For device deployment, flash host firmware first only when the generic USB bridge changes. Wait for the ESP32-S3 port to return, then install `capsule_face.xsa` into the discovered `xs` MOD partition. Ordinary face or state-machine changes should use the MOD-only deployment path.
 
