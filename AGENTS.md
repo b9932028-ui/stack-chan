@@ -83,6 +83,29 @@ Do not use `--target` or `npm_config_target`; the firmware command wrapper rejec
 2. From `firmware/`, use `npm run mod -- mods/your-mod/manifest.json` for rapid iteration
 3. MODs can add behavior via `onLaunch` and `onContextCreated` hooks
 
+## ChyMOD Design Contract
+
+ChyMOD spans the capsule-face MOD and its browser control page:
+
+- MOD implementation: `firmware/mods/capsule_face/`
+- Generic firmware USB extension registry: `firmware/host/modules/connectivity/usb-control-registry.ts`
+- Browser control page: `web/src/features/chymod/`, served at `/chymod/`
+
+Keep the animation state machine inside the MOD so it operates identically with no USB connection. It starts in `idle`; while idle and random playback is enabled, every three seconds it randomly selects one of `idle`, `blink`, `lookAround`, `happy`, or `angry`. A non-idle animation returns to `idle` when complete and restarts the three-second countdown. A manual animation request interrupts immediately, then follows the same return-to-idle behavior.
+
+USB is an optional control and observation path, not the animation scheduler. Keep host-firmware changes generic: MODs register namespaced commands through the USB control registry, and ChyMOD owns only the `chymod.*` namespace. The current protocol is:
+
+- `chymod.describe`: return the versioned, schema-driven control descriptor
+- `chymod.play`: immediately play one named animation
+- `chymod.status`: return the current animation, elapsed time, duration, random setting, and next decision time
+- `chymod.random`: enable or disable autonomous random playback
+
+Add future ChyMOD controls through the descriptor and namespaced request/response protocol instead of adding feature-specific switches to the default firmware USB server. Preserve the existing `stackchan-usb-v1` handshake and request IDs so multiple controls can share the serial connection safely.
+
+The web page must render controls from `chymod.describe`, display live state from `chymod.status`, and remain usable when capabilities are unavailable by showing a clear disconnected or unsupported state. Keep English, Japanese, and Simplified Chinese catalogs in sync for any new visible labels.
+
+For device deployment, flash host firmware first only when the generic USB bridge changes. Wait for the ESP32-S3 port to return, then install `capsule_face.xsa` into the discovered `xs` MOD partition. Ordinary face or state-machine changes should use the MOD-only deployment path.
+
 ## Hardware Configuration
 
 Configuration is managed through preferences system with these key areas:

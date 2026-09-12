@@ -1,4 +1,15 @@
-import { ArrowRight, Blocks, Box, Cpu, ScanFace, SlidersHorizontal, Smile, Store, type LucideIcon } from 'lucide-react'
+import {
+  ArrowRight,
+  Blocks,
+  Box,
+  Cpu,
+  Gamepad2,
+  ScanFace,
+  SlidersHorizontal,
+  Smile,
+  Store,
+  type LucideIcon,
+} from 'lucide-react'
 import { useEffect } from 'react'
 
 import { AppShell } from '@/app/app-shell'
@@ -26,8 +37,14 @@ const tools: Tool[] = [
   {
     href: 'preference/',
     label: '設定',
-    description: 'BLEで本体の設定を変更する',
+    description: 'USBまたはBLEで本体の設定を変更する',
     icon: SlidersHorizontal,
+  },
+  {
+    href: 'chymod/',
+    label: 'ChyMOD',
+    description: 'USBでChyMODの状態と動作を制御する',
+    icon: Gamepad2,
   },
   {
     href: 'mod-gallery/',

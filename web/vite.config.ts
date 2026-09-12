@@ -57,6 +57,7 @@ export default defineConfig({
         home: page('./index.html'),
         flash: page('./flash/index.html'),
         preference: page('./preference/index.html'),
+        chymod: page('./chymod/index.html'),
         gallery: page('./mod-gallery/index.html'),
         mediapipe: page('./mediapipe/index.html'),
         simulator: page('./simulator/index.html'),

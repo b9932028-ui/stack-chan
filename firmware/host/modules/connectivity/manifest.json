@@ -39,7 +39,8 @@
     "local-peer-types": "./local-peer-types",
     "wifi-scan": "./wifi-scan",
     "wifi-scan-types": "./wifi-scan-types",
-    "stored-wifi": "./stored-wifi"
+    "stored-wifi": "./stored-wifi",
+    "usb-preference-server": "./sim/usb-preference-server"
   },
   "preload": ["stk-server", "beacon-packet"],
   "ble": {
@@ -57,6 +58,11 @@
     },
     "esp32/m5stack": {
       "include": ["./manifest_local_peer_ble_only.json"]
+    },
+    "esp32/m5stackchan_cores3": {
+      "modules": {
+        "usb-preference-server": "./usb-preference-server"
+      }
     },
     "esp": {
       "include": ["$(MODULES)/io/wifi/manifest.json"],

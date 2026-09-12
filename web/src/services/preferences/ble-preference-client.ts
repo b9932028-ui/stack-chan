@@ -41,12 +41,28 @@ export type PreferenceValue = {
   readOnly?: boolean
 }
 
+export type ControlReadyMessage = {
+  type: 'control.ready'
+  capabilities: string[]
+}
+
+export type ControlResultMessage = {
+  type: 'control.result'
+  requestId?: number
+  command: string
+  ok: boolean
+  result?: unknown
+  error?: string
+}
+
+export type DeviceMessage = PreferenceValue | ControlReadyMessage | ControlResultMessage
+
 export interface PreferenceClient {
   onDisconnected?: () => void
   connect: () => Promise<void>
   disconnect: () => Promise<void>
   isConnected: () => boolean
-  send: (payload: { _batch: Record<string, string> }) => Promise<void>
+  send: (payload: object) => Promise<void>
 }
 
 export class BlePreferenceClient implements PreferenceClient {
@@ -124,7 +140,7 @@ export class BlePreferenceClient implements PreferenceClient {
     device?.gatt?.disconnect()
   }
 
-  async send(payload: { _batch: Record<string, string> }) {
+  async send(payload: object) {
     if (!this.rx || !this.isConnected()) throw new AppError('not-connected', 'ｽﾀｯｸﾁｬﾝへ接続していません')
     const bytes = this.encoder.encode(JSON.stringify(payload))
     for (let index = 0; index < bytes.length; index += 128) {

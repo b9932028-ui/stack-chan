@@ -78,6 +78,12 @@
       "volume-preview": [
         "./host/app/volume-preview"
       ],
+      "stackchan-usb-serial": [
+        "./host/modules/usb-audio/usb-serial"
+      ],
+      "stackchan-usb-serial-types": [
+        "./host/modules/usb-audio/usb-serial-types"
+      ],
       "localization": [
         "./host/modules/ui/localization"
       ],

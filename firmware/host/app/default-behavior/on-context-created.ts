@@ -1,16 +1,22 @@
+import { loadPreferenceConfig } from 'loadPreference'
 import type { StackchanAppBehavior } from 'app-behavior'
+import { shutdownAxp2101 } from 'axp2101-shutdown'
 import { DogFace, ImageFace, SimpleFace } from 'behaviors/face'
 import type { CameraImageType } from 'camera'
 import { type CameraPreviewFrame, createCameraPreviewDialog, prepareCameraPreviewFrame } from 'camera-preview'
+import { DOMAIN, PREF_KEYS } from 'consts'
 import { Emoticon, type EmoticonKey } from 'effects/emoticon'
 import { Emotion } from 'face-state'
 import { type HandAnimationName, isHandAnimationName } from 'hands'
 import type { MotionType } from 'imu'
 import { localize } from 'localization'
 import config from 'mc/config'
+import Modules from 'modules'
 import type { Content as PiuContent } from 'piu/MC'
 import { randomBetween, wait } from 'stackchan-util'
 import Timer from 'timer'
+import { getUSBControlExtensionCapabilities, runUSBControlExtension } from 'usb-control-registry'
+import { USBPreferenceServer } from 'usb-preference-server'
 
 const FORWARD = {
   y: 0,
@@ -50,6 +56,8 @@ const TOUCH_PANEL_PET_MOTION_STEP_SEC = TOUCH_PANEL_PET_MOTION_STEP_MS / 1000
 const MOTION_DETECT_COLD_DURATION_MS = 5000
 const SPEECH_SYNTHESIS_TEXT = 'こんにちわ。すたっくちゃんです。'
 
+let defaultUSBControlServer: USBPreferenceServer | undefined
+
 function errorMessage(error: unknown): string {
   if (error && typeof error === 'object' && 'message' in error) {
     return String((error as { message: unknown }).message)
@@ -77,6 +85,7 @@ export const onContextCreated: NonNullable<StackchanAppBehavior['onContextCreate
   let pettingHoldTimer: ReturnType<typeof Timer.set> | undefined
   let motionDetectRestoreTimer: ReturnType<typeof Timer.set> | undefined
   let motionDetectPreviousEmotion: Emotion | undefined
+  const remoteControl: { setLED?: (enabled: boolean) => void } = {}
   const emotionKeyMap: Record<Emotion, EmoticonKey | null> = {
     [Emotion.HAPPY]: 'heart',
     [Emotion.ANGRY]: 'angry',
@@ -173,6 +182,12 @@ export const onContextCreated: NonNullable<StackchanAppBehavior['onContextCreate
   const closeDrawer = () => robot.ui.closeDrawer()
   const createCurrentFace = () =>
     faceMode === 'dog' ? new DogFace({}) : faceMode === 'image' ? new ImageFace({}) : new SimpleFace({})
+  const applyFaceMode = (value: unknown) => {
+    if (value !== 'simple' && value !== 'dog' && value !== 'image') throw new Error('invalid face mode')
+    faceMode = value
+    robot.ui.setFace(createCurrentFace())
+    syncFaceMode()
+  }
   const restoreCameraPreview = () => {
     if (cameraPreviewTimer) {
       Timer.clear(cameraPreviewTimer)
@@ -192,12 +207,10 @@ export const onContextCreated: NonNullable<StackchanAppBehavior['onContextCreate
       { value: 'dog', label: localize('drawer.face.dog') },
       { value: 'image', label: localize('drawer.face.image') },
     ],
-    callback: (target, value) => {
-      if (value !== 'simple' && value !== 'dog' && value !== 'image') return
-      faceMode = value
-      target.ui.setFace(createCurrentFace())
-      const app = target.ui.application as { distribute?: (event: string, payload: unknown) => void } | undefined
-      syncFaceMode(app)
+    callback: (_target, value) => {
+      try {
+        applyFaceMode(value)
+      } catch {}
     },
   })
   syncFaceMode()
@@ -373,7 +386,9 @@ export const onContextCreated: NonNullable<StackchanAppBehavior['onContextCreate
    */
   let isFollowing = false
   const toggleLookAround = async () => {
-    const nextFollowing = !isFollowing
+    await setLookAround(!isFollowing)
+  }
+  const setLookAround = async (nextFollowing: boolean) => {
     try {
       await robot.setTorque(nextFollowing)
       isFollowing = nextFollowing
@@ -464,8 +479,8 @@ export const onContextCreated: NonNullable<StackchanAppBehavior['onContextCreate
   if (Object.keys(robot.led).length) {
     const ledName = Object.keys(robot.led)[0] as string
     let isLighting = false
-    const toggleLED = () => {
-      isLighting = !isLighting
+    const setLED = (enabled: boolean) => {
+      isLighting = enabled
       if (isLighting) {
         robot.lightRainbow(ledName)
       } else {
@@ -478,8 +493,9 @@ export const onContextCreated: NonNullable<StackchanAppBehavior['onContextCreate
       label: 'LED',
       kind: 'toggle',
       initialState: isLighting,
-      callback: toggleLED,
+      callback: () => setLED(!isLighting),
     })
+    remoteControl.setLED = setLED
   }
 
   /**
@@ -703,5 +719,162 @@ export const onContextCreated: NonNullable<StackchanAppBehavior['onContextCreate
         lastBackwardSwipeTicks = undefined
       }
     })
+  }
+
+  const preferences = loadPreferenceConfig()
+  const effectiveValues = Object.fromEntries(
+    PREF_KEYS.flatMap(([domain, key]) => {
+      const value = preferences[domain]?.[key]
+      return value == null ? [] : [[`${domain}.${key}`, value]]
+    }),
+  )
+  const emotionByName: Record<string, Emotion> = {
+    neutral: Emotion.NEUTRAL,
+    happy: Emotion.HAPPY,
+    angry: Emotion.ANGRY,
+    sad: Emotion.SAD,
+    hot: Emotion.HOT,
+    sleepy: Emotion.SLEEPY,
+  }
+  const poseByName = { forward: FORWARD, left: LEFT, right: RIGHT, down: DOWN, up: UP }
+  const system = (globalThis as typeof globalThis & { System?: { restart(): void } }).System
+  const power = Modules.has('axp2101-power-capture')
+    ? (
+        Modules.importNow('axp2101-power-capture') as {
+          getAxp2101Power():
+            | { powerOff(): void; readByte(register: number): number; writeByte(register: number, value: number): void }
+            | undefined
+        }
+      ).getAxp2101Power()
+    : undefined
+  let powerCommandPending = false
+  const controlCapabilities = [
+    ...(system?.restart ? ['restart'] : []),
+    ...(power?.powerOff ? ['shutdown', 'powerStatus'] : []),
+    'face',
+    'emotion',
+    'balloon',
+    'speak',
+    'hand',
+    'lookAround',
+    'pose',
+    'servoTest',
+    'tone',
+    'recordPlayback',
+    'color',
+    ...(robot.camera.available !== false ? ['camera'] : []),
+    ...(remoteControl.setLED ? ['led'] : []),
+    ...getUSBControlExtensionCapabilities(),
+  ]
+  try {
+    defaultUSBControlServer?.close()
+    defaultUSBControlServer = new USBPreferenceServer({
+      keys: PREF_KEYS,
+      effectiveValues,
+      readOnlyKeys: preferences.driver.typeLocked === true ? [`${DOMAIN.driver}.type`] : [],
+      controlCapabilities,
+      onControlCommand: async (command, value) => {
+        if (powerCommandPending) throw new Error('power operation already pending')
+        switch (command) {
+          case 'powerStatus': {
+            if (!power) throw new Error('power diagnostics unavailable')
+            const registers: Record<string, number> = {}
+            for (const address of [0x00, 0x01, 0x10, 0x20, 0x21, 0x22, 0x24, 0x25, 0x26]) {
+              registers[address.toString(16).padStart(2, '0')] = power.readByte(address)
+            }
+            const resetReason = Modules.has('stackchan-reset-reason')
+              ? (Modules.importNow('stackchan-reset-reason') as () => number)()
+              : undefined
+            return { resetReason, registers }
+          }
+          case 'restart':
+          case 'shutdown': {
+            let powerAction: () => void
+            if (command === 'restart') {
+              if (!system?.restart) throw new Error('restart unavailable')
+              powerAction = () => system.restart()
+            } else {
+              if (!power?.powerOff) throw new Error('shutdown unavailable')
+              powerAction = () => shutdownAxp2101(power)
+            }
+            powerCommandPending = true
+            // Allow the USB command acknowledgement to leave before disconnecting.
+            Timer.set(() => {
+              try {
+                powerAction()
+              } catch (error) {
+                trace(`[control-usb] power command failed: ${errorMessage(error)}\n`)
+              } finally {
+                powerCommandPending = false
+              }
+            }, 750)
+            return
+          }
+          case 'face':
+            applyFaceMode(value)
+            return
+          case 'emotion': {
+            const emotion = emotionByName[String(value)]
+            if (emotion === undefined) throw new Error('invalid emotion')
+            setEmotionWithEffect(robot, emotion)
+            return
+          }
+          case 'balloon': {
+            const text = String(value ?? '').slice(0, 160)
+            if (text) robot.showBalloon(text)
+            else robot.hideBalloon()
+            return
+          }
+          case 'speak': {
+            const text = String(value ?? '')
+              .trim()
+              .slice(0, 300)
+            if (!text) throw new Error('speech text is empty')
+            await robot.audio.say(text)
+            return
+          }
+          case 'hand':
+            if (!isHandAnimationName(value)) throw new Error('invalid hand animation')
+            handAnimation = value
+            syncHandAnimation()
+            return
+          case 'lookAround':
+            await setLookAround(value === true)
+            return
+          case 'pose': {
+            const rotation = poseByName[String(value) as keyof typeof poseByName]
+            if (!rotation) throw new Error('invalid pose')
+            isFollowing = false
+            robot.drawer.setDrawerButtonState('toggleLookAround', false)
+            await robot.setTorque(true)
+            await robot.setPose(poseForRotation(rotation))
+            return
+          }
+          case 'servoTest':
+            await runServoTest()
+            return
+          case 'led':
+            remoteControl.setLED?.(value === true)
+            return
+          case 'tone':
+            await runPlayTone()
+            return
+          case 'recordPlayback':
+            await runRecordPlayback()
+            return
+          case 'color':
+            if (value !== 'light' && value !== 'dark') throw new Error('invalid color scheme')
+            applyColor(value)
+            return
+          case 'camera':
+            await runCameraPreview(robot)
+            return
+          default:
+            return runUSBControlExtension(command, value)
+        }
+      },
+    })
+  } catch (error) {
+    trace(`[control-usb] unavailable: ${errorMessage(error)}\n`)
   }
 }

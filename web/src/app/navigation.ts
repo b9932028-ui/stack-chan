@@ -3,6 +3,7 @@ import {
   Box,
   CircleHelp,
   Cpu,
+  Gamepad2,
   Home,
   ScanFace,
   SlidersHorizontal,
@@ -12,7 +13,16 @@ import {
 } from 'lucide-react'
 
 export type NavigationId =
-  'home' | 'flash' | 'preference' | 'mod-gallery' | 'mediapipe' | 'simulator' | 'editor' | 'face-editor' | 'tutorial'
+  | 'home'
+  | 'flash'
+  | 'preference'
+  | 'chymod'
+  | 'mod-gallery'
+  | 'mediapipe'
+  | 'simulator'
+  | 'editor'
+  | 'face-editor'
+  | 'tutorial'
 
 export type NavigationItem = {
   id: NavigationId
@@ -35,8 +45,15 @@ export const TOOL_NAVIGATION_ITEMS: readonly NavigationItem[] = [
     id: 'preference',
     href: 'preference/',
     label: '設定',
-    description: 'BLEで本体の設定を変更する',
+    description: 'USBまたはBLEで本体の設定を変更する',
     icon: SlidersHorizontal,
+  },
+  {
+    id: 'chymod',
+    href: 'chymod/',
+    label: 'ChyMOD',
+    description: 'USBでChyMODの状態と動作を制御する',
+    icon: Gamepad2,
   },
   {
     id: 'mod-gallery',

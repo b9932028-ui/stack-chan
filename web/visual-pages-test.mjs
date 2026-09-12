@@ -14,6 +14,7 @@ const pages = [
   ['home', '/'],
   ['flash', '/flash/'],
   ['preference', '/preference/'],
+  ['chymod', '/chymod/'],
   ['mod-gallery', '/mod-gallery/'],
   ['mediapipe', '/mediapipe/'],
   ['editor', '/editor/'],

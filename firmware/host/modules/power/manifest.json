@@ -5,7 +5,8 @@
     "../../app/manifest_typings.json"
   ],
   "modules": {
-    "battery-level": "./battery-level"
+    "battery-level": "./battery-level",
+    "axp2101-shutdown": "./axp2101-shutdown"
   },
   "platforms": {
     "esp32/m5stack": {

@@ -220,7 +220,7 @@ function run(bin, binArgs, cwd = process.cwd()) {
   }
 
   ensureBuildOutputDirectory()
-  const result = spawnSync(bin, binArgs, { cwd, env: subprocessEnvironment, stdio: 'inherit' })
+  const result = spawnFirmwareTool(bin, binArgs, { cwd, env: subprocessEnvironment, stdio: 'inherit' })
   if (result.error) {
     console.error(`[stack-chan] ${bin}を実行できませんでした: ${result.error.message}`)
     console.error('[stack-chan] npm run setup と npm run doctor を確認してください。')
@@ -246,7 +246,7 @@ function prepareBuildVariant() {
 
   console.log(`[stack-chan] cleaning target before manifest switch: ${manifest}`)
   ensureBuildOutputDirectory()
-  const result = spawnSync(
+  const result = spawnFirmwareTool(
     'mcconfig',
     [...buildModeArgs, '-m', '-p', platform, '-t', 'clean', ...outputArgs, selectedVariant],
     { env: subprocessEnvironment, stdio: 'inherit' },
@@ -258,6 +258,23 @@ function prepareBuildVariant() {
   if (result.status !== 0) process.exit(result.status ?? 1)
   writeBuildVariant(markerPath, selectedVariant)
   return true
+}
+
+/**
+ * Runs Moddable's multi-call tools executable directly on Windows. Recent
+ * Node.js releases cannot spawn the SDK's .bat shims without a shell.
+ * Avoiding a shell also keeps arguments with spaces and user input intact.
+ * @param {string} bin - Executable name.
+ * @param {string[]} binArgs - Command-line arguments.
+ * @param {import('node:child_process').SpawnSyncOptions} options - Spawn options.
+ */
+function spawnFirmwareTool(bin, binArgs, options) {
+  const moddableTools = new Set(['mcconfig', 'mcpack', 'mcrun'])
+  if (process.platform === 'win32' && moddableTools.has(bin) && process.env.MODDABLE) {
+    const toolsExecutable = path.join(process.env.MODDABLE, 'build', 'bin', 'win', 'release', 'tools.exe')
+    if (existsSync(toolsExecutable)) return spawnSync(toolsExecutable, [bin, ...binArgs], options)
+  }
+  return spawnSync(bin, binArgs, options)
 }
 
 /**

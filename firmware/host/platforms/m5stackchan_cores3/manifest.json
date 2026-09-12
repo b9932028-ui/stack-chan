@@ -13,6 +13,7 @@
     "embedded:sensor/Touch/FT6x06": "./host/ft6206_async_m5stackchan",
     "setup/m5stackchan-power": "./setup-target",
     "stackchan-sdcard": "./sd-card",
+    "stackchan-reset-reason": "./reset-reason",
     "pins/audioout-original": "$(MODULES)/pins/i2s/audioout",
     "pins/audioout": "../core_s3_audioout"
   },

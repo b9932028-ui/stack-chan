@@ -17,6 +17,7 @@ import {
 import Speaker from 'speaker'
 import { clearStoredWiFiCredentials, connectStoredWiFi, stopStoredWiFiConnection } from 'stored-wifi'
 import { applyTimezone as applySystemTimezone, normalizeTimezoneId, type TimezoneId } from 'timezone-settings'
+import { USBPreferenceServer } from 'usb-preference-server'
 import { canonicalizeVolume, resolveVolumePreference } from 'volume-model'
 import { VolumePreviewQueue } from 'volume-preview'
 import { scanWiFiNetworks } from 'wifi-scan'
@@ -78,6 +79,7 @@ export function startSetupMode(application: SettingsApplication): Promise<SetupM
     let scanSession: WiFiScanSession | undefined
     let scanResults: RawWiFiScanResult[] = []
     let preferenceServer: PreferenceServer | undefined
+    let usbPreferenceServer: USBPreferenceServer | undefined
     let finished = false
 
     const viewContext: SettingsViewContext = {
@@ -103,6 +105,7 @@ export function startSetupMode(application: SettingsApplication): Promise<SetupM
       currentView?.dispose?.()
       currentView = undefined
       preferenceServer?.close?.()
+      usbPreferenceServer?.close?.()
       if (result === 'back') stopStoredWiFiConnection()
       void volumePreviewQueue.close().then(
         () => resolve(result),
@@ -278,5 +281,32 @@ export function startSetupMode(application: SettingsApplication): Promise<SetupM
       effectiveValues,
       readOnlyKeys: preferences.driver.typeLocked === true ? ['driver.type'] : [],
     })
+    try {
+      usbPreferenceServer = new USBPreferenceServer({
+        onPreferenceChanged: (key, value) => {
+          trace(`preference changed over USB! ${key}\n`)
+          if (key === `${DOMAIN.ui}.language`) {
+            applyLanguage(value, false)
+            return
+          }
+          if (key === `${DOMAIN.time}.timezone`) {
+            applyTimezone(value, false)
+            showView(currentViewId)
+            return
+          }
+          if (key === `${DOMAIN.tts}.volume`) {
+            applyVolume(value, false, false)
+            return
+          }
+          status[key] = value
+          updateCurrentView()
+        },
+        keys: PREF_KEYS,
+        effectiveValues,
+        readOnlyKeys: preferences.driver.typeLocked === true ? ['driver.type'] : [],
+      })
+    } catch (error) {
+      trace(`[preferences-usb] unavailable: ${String(error)}\n`)
+    }
   })
 }
