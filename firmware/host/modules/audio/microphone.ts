@@ -1,7 +1,9 @@
 import { type OwnedAudioBuffer, ownAudioBuffer } from 'audio-buffer'
 import AudioIn from 'audio-in'
+import { acquireAudioInput, releaseAudioInput } from 'audio-input-lock'
 
 const CHANNELS = 1
+const AUDIO_INPUT_OWNER = 'microphone'
 
 export default class Microphone {
   recording: boolean
@@ -20,15 +22,23 @@ export default class Microphone {
       throw new Error('already recording')
     }
     const self = this
-    this.#audioIn = new AudioIn({
-      channels: CHANNELS,
-      onReadable(size, sampleCount) {
-        if (self.onReadable) {
-          self.onReadable.call(this, size, sampleCount)
-        }
-      },
-    })
-    this.#audioIn.start()
+    acquireAudioInput(AUDIO_INPUT_OWNER)
+    try {
+      this.#audioIn = new AudioIn({
+        channels: CHANNELS,
+        onReadable(size, sampleCount) {
+          if (self.onReadable) {
+            self.onReadable.call(this, size, sampleCount)
+          }
+        },
+      })
+      this.#audioIn.start()
+    } catch (error) {
+      this.#audioIn?.close()
+      this.#audioIn = null
+      releaseAudioInput(AUDIO_INPUT_OWNER)
+      throw error
+    }
     this.recording = true
   }
 
@@ -37,12 +47,14 @@ export default class Microphone {
     this.#audioIn = null
     this.#abortRecording?.()
     this.recording = false
+    releaseAudioInput(AUDIO_INPUT_OWNER)
   }
 
   async record(durationMilliSec = 3000): Promise<OwnedAudioBuffer> {
     if (this.recording) {
       throw new Error('already recording')
     }
+    acquireAudioInput(AUDIO_INPUT_OWNER)
     this.recording = true
     const HEADER_SIZE = 44
 
@@ -58,6 +70,7 @@ export default class Microphone {
         this.#abortRecording = null
         audioin?.close()
         this.recording = false
+        releaseAudioInput(AUDIO_INPUT_OWNER)
         resolve(ownAudioBuffer(wavBuffer))
       }
       const fail = (error: unknown) => {
@@ -66,6 +79,7 @@ export default class Microphone {
         this.#abortRecording = null
         audioin?.close()
         this.recording = false
+        releaseAudioInput(AUDIO_INPUT_OWNER)
         reject(error)
       }
       // Lets stop() abort a finite recording so close() never leaves the microphone held.
@@ -94,6 +108,7 @@ export default class Microphone {
       } catch (error) {
         this.#abortRecording = null
         this.recording = false
+        releaseAudioInput(AUDIO_INPUT_OWNER)
         reject(error)
         return
       }

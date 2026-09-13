@@ -28,6 +28,7 @@
   },
   "preload": [
     "audio-in",
+    "audio-input-lock",
     "audio-buffer",
     "microphone",
     "speaker",
@@ -139,6 +140,7 @@
         "web-radio-stream-worker": "./platforms/m5stackchan-cores3/web-radio-stream-worker",
         "stackchanOpusDecoder": "./platforms/m5stackchan-cores3/esp32-opus-decoder",
         "stackchanOpusEncoder": "./platforms/m5stackchan-cores3/esp32-opus-encoder",
+        "micro-wake-word": "./platforms/m5stackchan-cores3/micro-wake-word",
         "embedded:io/audio/in": "$(MODDABLE)/modules/io/audioin/esp32/audioin",
         "tts-stackchan-voice": "./stackchan-voice/tts-stackchan-voice"
       },
@@ -155,8 +157,30 @@
             "include/encoder",
             "include/encoder/impl"
           ]
+        },
+        {
+          "name": "esp-tflite-micro",
+          "version": "==1.3.3~1",
+          "includes": [
+            ".",
+            "third_party/flatbuffers/include",
+            "third_party/gemmlowp",
+            "third_party/ruy"
+          ]
+        },
+        {
+          "name": "esp-nn",
+          "version": "==1.1.2"
+        },
+        {
+          "namespace": "esphome",
+          "name": "esp-micro-speech-features",
+          "version": "==1.2.3"
         }
       ],
+      "data": {
+        "*": ["./platforms/m5stackchan-cores3/okay_nabu"]
+      },
       "defines": {
         "audioOut": {
           "bitsPerSample": 16,

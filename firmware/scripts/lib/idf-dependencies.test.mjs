@@ -9,6 +9,9 @@ const audioManifest = JSON.parse(readFileSync(new URL('../../host/modules/audio/
 const audioCodec = audioManifest.platforms['esp32/m5stackchan_cores3'].dependency.find(
   ({ name }) => name === 'esp_audio_codec',
 )
+const wakeDependencies = audioManifest.platforms['esp32/m5stackchan_cores3'].dependency
+  .filter(({ name }) => ['esp-tflite-micro', 'esp-nn', 'esp-micro-speech-features'].includes(name))
+  .map(({ namespace = 'espressif', name, version }) => [`${namespace}/${name}`, version])
 
 test('prepares CoreS3 managed components without duplicating them', () => {
   const outputDirectory = mkdtempSync(path.join(tmpdir(), 'stackchan-idf-dependencies-'))
@@ -33,6 +36,10 @@ test('prepares CoreS3 managed components without duplicating them', () => {
     assert.equal(count(second, 'espressif/esp_audio_codec:'), 1)
     assert.ok(second.includes(`espressif/esp_audio_codec: ${audioCodec.version}`))
     assert.equal(count(second, 'espressif/esp32-camera:'), 1)
+    for (const [name, version] of wakeDependencies) {
+      assert.equal(count(second, `${name}:`), 1)
+      assert.ok(second.includes(`${name}: ${version}`))
+    }
   } finally {
     rmSync(outputDirectory, { recursive: true, force: true })
   }

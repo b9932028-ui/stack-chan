@@ -153,6 +153,13 @@ function createFirmwareWrapperFixture() {
   mkdirSync(partitionDirectory, { recursive: true })
   writeFileSync(path.join(partitionDirectory, 'partitions.csv'), '# test partition table\n')
 
+  // prepareWindowsNinjaResponseFiles copies these templates out of the SDK, so the
+  // fake Moddable needs them exactly where a real install keeps them.
+  const esp32ProjectDirectory = path.join(fakeModdable, 'build', 'devices', 'esp32', 'xsProj-esp32s3')
+  mkdirSync(path.join(esp32ProjectDirectory, 'main'), { recursive: true })
+  writeFileSync(path.join(esp32ProjectDirectory, 'CMakeLists.txt'), 'project(test)\n')
+  writeFileSync(path.join(esp32ProjectDirectory, 'main', 'CMakeLists.txt'), 'idf_component_register(SRCS)\n')
+
   const appDirectory = path.join(fixtureFirmware, 'host', 'app')
   mkdirSync(appDirectory, { recursive: true })
   const normalManifest = path.join(appDirectory, 'manifest_android_usb_audio.json')

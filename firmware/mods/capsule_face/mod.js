@@ -3,7 +3,9 @@ import { FaceBase } from 'behaviors/face'
 import { Outline } from 'commodetto/outline'
 import { Emoticon } from 'effects/emoticon'
 import { Emotion } from 'face-state'
+import MicroWakeWord from 'micro-wake-word'
 import { getFillSkin } from 'parts/shape-utils'
+import Preference from 'preference'
 import { defineShapeTemplate } from 'template'
 import { registerUSBControlNamespace } from 'usb-control-registry'
 
@@ -402,6 +404,11 @@ function createAnimationStateMachine() {
   let elapsed = 0
   let randomEnabled = true
   let visualListener = null
+  let wakeEnabled = false
+  let wakeError = null
+  let wakeHitCount = 0
+  let lastWakePhrase = null
+  let wakeWord = null
 
   const notifyVisuals = () => visualListener?.(state, elapsed)
 
@@ -434,7 +441,43 @@ function createAnimationStateMachine() {
     elapsedMs: Math.round(elapsed),
     durationMs: durationFor(),
     nextRandomInMs: state === 'idle' && randomEnabled ? Math.max(0, Math.round(IDLE_DECISION_MS - elapsed)) : null,
+    wakeEnabled,
+    wakeError,
+    wakeHitCount,
+    lastWakePhrase,
+    wakeStats: wakeWord?.stats() ?? null,
   })
+
+  const onWakeDetected = (phrase) => {
+    wakeHitCount += 1
+    lastWakePhrase = phrase
+    enter('happy')
+  }
+
+  const setWake = (value, persist = true) => {
+    if (typeof value !== 'boolean') throw new Error('wake mode must be boolean')
+    wakeError = null
+    if (value !== wakeEnabled) {
+      if (value) {
+        try {
+          wakeWord = new MicroWakeWord(onWakeDetected)
+          wakeWord.start()
+          wakeEnabled = true
+        } catch (error) {
+          wakeWord?.close()
+          wakeWord = null
+          wakeEnabled = false
+          wakeError = String(error)
+        }
+      } else {
+        wakeWord?.close()
+        wakeWord = null
+        wakeEnabled = false
+      }
+    }
+    if (persist) Preference.set('chymod', 'wake', wakeEnabled)
+    return status()
+  }
 
   return {
     play(value) {
@@ -448,6 +491,7 @@ function createAnimationStateMachine() {
       if (state === 'idle') elapsed = 0
       return status()
     },
+    setWake,
     setVisualListener(listener) {
       visualListener = listener
       notifyVisuals()
@@ -492,7 +536,7 @@ function createAnimationMotion(machine) {
 }
 
 function registerChyModControls(machine) {
-  registerUSBControlNamespace('chymod', ['describe', 'play', 'status', 'random'], (command, value) => {
+  registerUSBControlNamespace('chymod', ['describe', 'play', 'status', 'random', 'wake'], (command, value) => {
     switch (command) {
       case 'describe':
         return {
@@ -511,6 +555,13 @@ function registerChyModControls(machine) {
               statusKey: 'randomEnabled',
               label: 'Enable random animation every 3 seconds',
             },
+            {
+              id: 'wakeEnabled',
+              kind: 'toggle',
+              command: 'chymod.wake',
+              statusKey: 'wakeEnabled',
+              label: 'Enable “Okay Nabu” wake animation',
+            },
           ],
         }
       case 'play':
@@ -519,6 +570,8 @@ function registerChyModControls(machine) {
         return machine.status()
       case 'random':
         return machine.setRandom(value)
+      case 'wake':
+        return machine.setWake(value)
       default:
         throw new Error('unsupported ChyMOD command')
     }
@@ -549,4 +602,5 @@ export function onContextCreated(robot, option) {
   robot.ui.addEffect(new WorkingEffect({ machine }), 'chymod-working')
   robot.face.setColor('primary', 0xff, 0xff, 0xff)
   robot.face.setColor('secondary', 0x00, 0x00, 0x00)
+  if (Preference.get('chymod', 'wake') === true) machine.setWake(true, false)
 }

@@ -34,7 +34,7 @@ describe('ChyModPage', () => {
               kind: 'toggle',
               command: 'chymod.wake',
               statusKey: 'wakeEnabled',
-              label: 'Enable “Hi Copilot” / “Hey Copilot” wake animation',
+              label: 'Enable “Okay Nabu” wake animation',
             },
           ],
         }
@@ -77,9 +77,7 @@ describe('ChyModPage', () => {
 
     // Control wording is the page's, not the firmware's fixed English.
     expect(screen.getByRole('checkbox', { name: '3秒ごとのランダム再生を有効にする' })).toBeChecked()
-    const wakeToggle = screen.getByRole('checkbox', {
-      name: '「Hi Copilot」「Hey Copilot」の起動アニメーションを有効にする',
-    })
+    const wakeToggle = screen.getByRole('checkbox', { name: 'Enable “Okay Nabu” wake animation' })
     fireEvent.click(wakeToggle)
     await waitFor(() => expect(request).toHaveBeenCalledWith('chymod.wake', true))
   })
@@ -89,9 +87,7 @@ describe('ChyModPage', () => {
       if (command === 'chymod.describe') {
         return {
           version: 1,
-          controls: [
-            { id: 'futureFlag', kind: 'toggle', command: 'chymod.future', label: 'Some future toggle' },
-          ],
+          controls: [{ id: 'futureFlag', kind: 'toggle', command: 'chymod.future', label: 'Some future toggle' }],
         }
       }
       return { version: 1, state: 'idle', randomEnabled: true, elapsedMs: 0, durationMs: null, nextRandomInMs: 3000 }

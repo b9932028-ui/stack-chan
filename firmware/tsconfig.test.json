@@ -29,6 +29,9 @@
       "audio-buffer": [
         "./host/modules/audio/audio-buffer.ts"
       ],
+      "audio-input-lock": [
+        "./host/modules/audio/audio-input-lock.ts"
+      ],
       "tts-types": [
         "./host/modules/audio/tts-types.ts"
       ],

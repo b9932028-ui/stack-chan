@@ -6,6 +6,9 @@ const dependenciesByPlatform = {
   m5stackchan_cores3: [
     ['espressif/esp_audio_codec', '~2.5.0'],
     ['espressif/esp32-camera', '^2.0.10'],
+    ['espressif/esp-tflite-micro', '==1.3.3~1'],
+    ['espressif/esp-nn', '==1.1.2'],
+    ['esphome/esp-micro-speech-features', '==1.2.3'],
   ],
 }
 

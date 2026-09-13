@@ -9,6 +9,7 @@ type FakeAudioIn = typeof import('../../testing/fakes/audio-in.js')
 
 function installBareSpecifierPackages(): void {
   const modulesRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..')
+  writeAliasPackage(modulesRoot, 'audio-input-lock', resolve(modulesRoot, 'audio/audio-input-lock.js'))
   writeAliasPackage(modulesRoot, 'audio-buffer', resolve(modulesRoot, 'audio/audio-buffer.js'))
   writeAliasPackage(modulesRoot, 'audio-in', resolve(modulesRoot, 'testing/fakes/audio-in.js'), {
     hasDefaultExport: true,
@@ -82,4 +83,17 @@ test('Microphone.record clears recording state when AudioIn start throws', async
   await assert.rejects(() => microphone.record(1), /start failed/)
 
   assert.equal(microphone.recording, false)
+})
+
+test('Microphone rejects a second AudioIn owner without opening the driver', async () => {
+  const { Microphone, audioIn } = await setup([])
+  const { acquireAudioInput, releaseAudioInput } = await import('../audio-input-lock.js')
+  acquireAudioInput('wake word')
+  try {
+    const microphone = new Microphone()
+    await assert.rejects(() => microphone.record(1), /microphone is in use by wake word/)
+    assert.equal(audioIn.getAudioInInstances().length, 0)
+  } finally {
+    releaseAudioInput('wake word')
+  }
 })

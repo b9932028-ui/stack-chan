@@ -59,7 +59,7 @@ const animationLabels: Record<string, string> = {
  */
 const toggleLabels: Record<string, string> = {
   randomEnabled: '啟用每3秒亂數播放',
-  wakeEnabled: '啟用「Hi Copilot」/「Hey Copilot」喚醒動畫',
+  wakeEnabled: 'Enable “Okay Nabu” wake animation',
 }
 
 function isDescriptor(value: unknown): value is ChyModDescriptor {
@@ -245,7 +245,11 @@ export function ChyModPage() {
                     id={`chymod-${control.id}`}
                     checked={
                       status
-                        ? Boolean(status[control.statusKey ?? (control.id === 'wakeEnabled' ? 'wakeEnabled' : 'randomEnabled')])
+                        ? Boolean(
+                            status[
+                              control.statusKey ?? (control.id === 'wakeEnabled' ? 'wakeEnabled' : 'randomEnabled')
+                            ]
+                          )
                         : false
                     }
                     disabled={!usb.connected || busyControl !== null}
