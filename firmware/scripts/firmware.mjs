@@ -17,7 +17,7 @@ import {
   writeBuildVariant,
 } from './lib/build-variant.mjs'
 import { aliases, devices, resolveDevice } from './lib/devices.mjs'
-import { prepareCoreS3IdfDependencies } from './lib/idf-dependencies.mjs'
+import { prepareCoreS3IdfDependencies, prepareWindowsNinjaResponseFiles } from './lib/idf-dependencies.mjs'
 import { installModArchive, resolveModArchivePath } from './lib/mod-flash.mjs'
 import { prepareCoreS3VersionSdkconfig, readModdableVersion } from './lib/moddable-version.mjs'
 
@@ -86,13 +86,23 @@ if (!dryRun && deviceName === 'm5stackchan_cores3' && command !== 'mod' && comma
       applicationName: hostApplicationName,
       mode: buildMode,
     })
+    prepareWindowsNinjaResponseFiles({
+      outputDirectory: buildOutputDirectory,
+      platformName: deviceName,
+      applicationName: hostApplicationName,
+      mode: buildMode,
+    })
   } catch (error) {
     console.error(`[stack-chan] IDF dependencies could not be prepared: ${error.message}`)
     process.exit(1)
   }
   try {
     const versionSdkconfig = prepareCoreS3VersionSdkconfig()
-    subprocessEnvironment = { ...subprocessEnvironment, SDKCONFIGPATH: versionSdkconfig.directory }
+    subprocessEnvironment = {
+      ...subprocessEnvironment,
+      SDKCONFIGPATH: versionSdkconfig.directory,
+      ...(process.platform === 'win32' ? { PYTHONUTF8: '1' } : {}),
+    }
   } catch (error) {
     console.error(`[stack-chan] CoreS3 firmware version could not be prepared: ${error.message}`)
     process.exit(1)
@@ -105,6 +115,12 @@ const buildVariantChanged =
 if (buildVariantChanged && deviceName === 'm5stackchan_cores3') {
   try {
     prepareCoreS3IdfDependencies({
+      outputDirectory: buildOutputDirectory,
+      platformName: deviceName,
+      applicationName: hostApplicationName,
+      mode: buildMode,
+    })
+    prepareWindowsNinjaResponseFiles({
       outputDirectory: buildOutputDirectory,
       platformName: deviceName,
       applicationName: hostApplicationName,

@@ -1,7 +1,21 @@
+/** One write target named by a manifest: a binary and the flash offset it belongs at. */
+export type FirmwarePartRef = { path: string; offset: number }
+
+/**
+ * Supplies the manifest and the binaries from somewhere other than `manifestUrl`,
+ * so a locally built firmware can be written without being published to this site.
+ */
+export type FirmwareSource = {
+  readManifest: () => Promise<unknown>
+  readPart: (part: FirmwarePartRef) => Promise<Uint8Array>
+}
+
 export type FirmwareBoard = {
   id: string
   label: string
   manifestUrl: string
+  /** When set, the manifest and binaries come from here instead of `manifestUrl`. */
+  source?: FirmwareSource
 }
 
 export const FIRMWARE_BOARDS: readonly FirmwareBoard[] = [

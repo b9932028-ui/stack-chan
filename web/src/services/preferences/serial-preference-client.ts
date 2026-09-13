@@ -1,16 +1,23 @@
 import { AppError } from '@/lib/errors/app-error'
 import type { DeviceMessage, PreferenceClient } from '@/services/preferences/ble-preference-client'
 
-type SerialPortLike = {
+export type SerialPortInfoLike = {
+  usbVendorId?: number
+  usbProductId?: number
+}
+
+export type SerialPortLike = {
   readable?: ReadableStream<Uint8Array>
   writable?: WritableStream<Uint8Array>
   open: (options: { baudRate: number }) => Promise<void>
   close: () => Promise<void>
+  getInfo?: () => SerialPortInfoLike
 }
 
-type SerialNavigator = Navigator & {
+export type SerialNavigator = Navigator & {
   serial?: {
     requestPort: () => Promise<SerialPortLike>
+    getPorts?: () => Promise<SerialPortLike[]>
   }
 }
 
@@ -30,12 +37,12 @@ export class SerialPreferenceClient implements PreferenceClient {
     this.onValue = onValue
   }
 
-  async connect() {
+  async connect(authorizedPort?: SerialPortLike) {
     const serial = (navigator as SerialNavigator).serial
     if (!serial) throw new AppError('serial-unavailable', 'このブラウザはWeb Serialに対応していません。')
     if (this.port) await this.disconnect()
 
-    const port = await serial.requestPort()
+    const port = authorizedPort ?? (await serial.requestPort())
     try {
       await port.open({ baudRate: 115200 })
       if (!port.readable || !port.writable) {
@@ -57,6 +64,10 @@ export class SerialPreferenceClient implements PreferenceClient {
 
   isConnected() {
     return this.connected
+  }
+
+  getPort() {
+    return this.port
   }
 
   async disconnect() {

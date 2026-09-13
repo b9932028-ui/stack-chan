@@ -91,7 +91,7 @@ ChyMOD spans the capsule-face MOD and its browser control page:
 - Generic firmware USB extension registry: `firmware/host/modules/connectivity/usb-control-registry.ts`
 - Browser control page: `web/src/features/chymod/`, served at `/chymod/`
 
-Keep the animation state machine inside the MOD so it operates identically with no USB connection. It starts in `idle`; while idle and random playback is enabled, every three seconds it randomly selects one of `idle`, `blink`, `lookAround`, `happy`, or `angry`. A non-idle animation returns to `idle` when complete and restarts the three-second countdown. A manual animation request interrupts immediately, then follows the same return-to-idle behavior.
+Keep the animation state machine inside the MOD so it operates identically with no USB connection. It starts in `idle`; while idle and random playback is enabled, every three seconds it randomly selects one of `idle`, `blink`, `lookAround`, `happy`, `angry`, or `working`. A non-idle animation returns to `idle` when complete and restarts the three-second countdown. A manual animation request interrupts immediately, then follows the same return-to-idle behavior. The `working` animation may use the full-screen effect layer for visuals such as its book and animated bottom status line that must render outside the movable face region.
 
 USB is an optional control and observation path, not the animation scheduler. Keep host-firmware changes generic: MODs register namespaced commands through the USB control registry, and ChyMOD owns only the `chymod.*` namespace. The current protocol is:
 
@@ -105,6 +105,8 @@ Add future ChyMOD controls through the descriptor and namespaced request/respons
 The web page must render controls from `chymod.describe`, display live state from `chymod.status`, and remain usable when capabilities are unavailable by showing a clear disconnected or unsupported state. For backend/web UI updates, add and maintain English copy only. Do not update Japanese or Simplified Chinese translations unless the user explicitly requests them.
 
 For device deployment, flash host firmware first only when the generic USB bridge changes. Wait for the ESP32-S3 port to return, then install `capsule_face.xsa` into the discovered `xs` MOD partition. Ordinary face or state-machine changes should use the MOD-only deployment path.
+
+When a required local development port is occupied and the project service needs to restart, identify the owning process from the exact port and verify that it belongs to this project, then stop the old service before starting its replacement. Do not terminate unrelated processes or use broad process cleanup.
 
 ## Hardware Configuration
 

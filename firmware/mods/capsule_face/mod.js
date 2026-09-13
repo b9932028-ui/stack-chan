@@ -7,17 +7,24 @@ import { getFillSkin } from 'parts/shape-utils'
 import { defineShapeTemplate } from 'template'
 import { registerUSBControlNamespace } from 'usb-control-registry'
 
-const ANIMATION_NAMES = ['idle', 'blink', 'lookAround', 'happy', 'angry']
+const ANIMATION_NAMES = ['idle', 'blink', 'lookAround', 'happy', 'angry', 'working']
 const IDLE_DECISION_MS = 3000
-const BLINK_DURATION_MS = 300
+const BLINK_DURATION_MS = 1000
 const LOOK_DURATION_MS = 7600
 const MOOD_DURATION_MS = 3000
 const MOOD_TRANSITION_MS = 450
+const WORK_DURATION_MS = 15000
+const WORK_TRANSITION_MS = 500
+const WORK_LINE_MS = 2400
+const WORK_BLINK_START_MS = 2050
 
 const LOOK_X_OFFSET_PX = 27
+const SINGLE_BLINK_DURATION_MS = 300
+const BLINK_GAP_MS = 300
+const SECOND_BLINK_START_MS = SINGLE_BLINK_DURATION_MS + BLINK_GAP_MS
 const BLINK_CLOSE_MS = 90
 const BLINK_HOLD_MS = 40
-const BLINK_OPEN_MS = BLINK_DURATION_MS - BLINK_CLOSE_MS - BLINK_HOLD_MS
+const BLINK_OPEN_MS = SINGLE_BLINK_DURATION_MS - BLINK_CLOSE_MS - BLINK_HOLD_MS
 const LOOK_KEYFRAMES = [
   [0, 0, 0, 0],
   [600, -LOOK_X_OFFSET_PX, 5, 0],
@@ -38,6 +45,14 @@ const EYE_CANVAS_HEIGHT = 104
 const EYE_BASE_LEFT = (EYE_CANVAS_WIDTH - EYE_WIDTH) / 2
 const EYE_BASE_TOP = (EYE_CANVAS_HEIGHT - EYE_HEIGHT) / 2
 const MORPH_STEPS = 8
+const workingPrimarySkin = getFillSkin(0xffffff)
+const workingSecondarySkin = getFillSkin(0x000000)
+const workingLabelStyle = new Style({
+  font: 'OpenSans-Regular-24',
+  color: '#ffffff',
+  horizontal: 'left',
+  vertical: 'middle',
+})
 
 const smoothStep = (value) => value * value * (3 - 2 * value)
 
@@ -180,6 +195,106 @@ const MoodMark = Container.template((opts) => ({
   contents: [new Emoticon({ key: opts.key, left: 0, top: 0, width: opts.size, height: opts.size })],
 }))
 
+const WorkingEffect = Container.template((opts) => {
+  // Scale every page detail together while preserving the book's width.
+  const bookY = (value) => Math.round((value * 2) / 3)
+  const bookPart = (left, top, width, height, skin) =>
+    new Content(null, {
+      left,
+      top: bookY(top),
+      width,
+      height: Math.max(1, bookY(height)),
+      skin,
+    })
+  const pageTurn = new Container(null, {
+    left: 70,
+    top: bookY(5),
+    width: 56,
+    height: bookY(38),
+    visible: false,
+    clip: true,
+    skin: new Skin({ fill: '#b8c4cf' }),
+    contents: [
+      new Content(null, { left: 0, top: 0, bottom: 0, width: 2, skin: workingSecondarySkin }),
+      bookPart(5, 10, 42, 2, workingSecondarySkin),
+      bookPart(5, 20, 34, 2, workingSecondarySkin),
+    ],
+  })
+  const book = new Container(null, {
+    left: 94,
+    top: 188,
+    width: 132,
+    height: bookY(48),
+    contents: [
+      bookPart(0, 4, 64, 40, workingPrimarySkin),
+      bookPart(68, 4, 64, 40, workingPrimarySkin),
+      bookPart(4, 44, 58, 3, workingPrimarySkin),
+      bookPart(70, 44, 58, 3, workingPrimarySkin),
+      bookPart(65, 8, 3, 36, workingSecondarySkin),
+      bookPart(10, 14, 44, 2, workingSecondarySkin),
+      bookPart(10, 24, 38, 2, workingSecondarySkin),
+      bookPart(78, 14, 44, 2, workingSecondarySkin),
+      bookPart(84, 24, 38, 2, workingSecondarySkin),
+      pageTurn,
+    ],
+  })
+  const label = new Label(null, {
+    left: 94,
+    width: 150,
+    top: 18,
+    height: 32,
+    string: 'Working',
+    style: workingLabelStyle,
+  })
+  return {
+    left: 0,
+    top: 0,
+    width: 320,
+    height: 240,
+    visible: false,
+    contents: [book, label],
+    Behavior: class extends Behavior {
+      onCreate(container) {
+        opts.machine.setVisualListener((state, elapsed) => {
+          const active = state === 'working'
+          container.visible = active
+          if (!active) return
+
+          const transition =
+            elapsed < WORK_TRANSITION_MS
+              ? smoothStep(elapsed / WORK_TRANSITION_MS)
+              : elapsed > WORK_DURATION_MS - WORK_TRANSITION_MS
+                ? smoothStep((WORK_DURATION_MS - elapsed) / WORK_TRANSITION_MS)
+                : 1
+          book.coordinates = {
+            left: 94,
+            top: 202 - 14 * transition,
+            width: 132,
+            height: bookY(48),
+          }
+
+          const dots = Math.floor(elapsed / 350) % 4
+          label.string = `Working${dots === 0 ? '' : ` ${'.'.repeat(dots)}`}`
+
+          const pagePhase = elapsed % (WORK_LINE_MS * 2)
+          const turnDuration = 1200
+          pageTurn.visible = pagePhase >= WORK_LINE_MS * 2 - turnDuration
+          if (pageTurn.visible) {
+            const progress = (pagePhase - (WORK_LINE_MS * 2 - turnDuration)) / turnDuration
+            const width = Math.max(3, Math.round(60 * Math.abs(Math.cos(Math.PI * progress))))
+            pageTurn.coordinates = {
+              left: progress < 0.5 ? 66 : 66 - width,
+              top: bookY(5) - Math.round(9 * Math.sin(Math.PI * progress)),
+              width,
+              height: bookY(38) + Math.round(6 * Math.sin(Math.PI * progress)),
+            }
+          }
+        })
+      }
+    },
+  }
+})
+
 function applyLookPose(elapsed, face) {
   let x = 0
   let leftY = 0
@@ -206,12 +321,21 @@ function applyLookPose(elapsed, face) {
   face.eyes.right.gazeY = rightY / 2
 }
 
-function getBlinkOpen(elapsed) {
+function getSingleBlinkOpen(elapsed) {
   if (elapsed < BLINK_CLOSE_MS) {
     return 1 - smoothStep(elapsed / BLINK_CLOSE_MS)
   }
   if (elapsed < BLINK_CLOSE_MS + BLINK_HOLD_MS) return 0
   return smoothStep((elapsed - BLINK_CLOSE_MS - BLINK_HOLD_MS) / BLINK_OPEN_MS)
+}
+
+function getBlinkOpen(elapsed) {
+  if (elapsed < SINGLE_BLINK_DURATION_MS) return getSingleBlinkOpen(elapsed)
+  if (elapsed < SECOND_BLINK_START_MS) return 1
+  if (elapsed < SECOND_BLINK_START_MS + SINGLE_BLINK_DURATION_MS) {
+    return getSingleBlinkOpen(elapsed - SECOND_BLINK_START_MS)
+  }
+  return 1
 }
 
 function applyMoodPose(face, emotion, progress) {
@@ -244,6 +368,31 @@ function applyMoodAnimation(face, emotion, elapsed) {
   applyMoodPose(face, emotion, progress)
 }
 
+function applyWorkingPose(face, elapsed) {
+  const lineElapsed = elapsed % WORK_LINE_MS
+  const scanProgress = smoothStep(Math.min(1, lineElapsed / (WORK_LINE_MS - 450)))
+  const transition =
+    elapsed < WORK_TRANSITION_MS
+      ? smoothStep(elapsed / WORK_TRANSITION_MS)
+      : elapsed > WORK_DURATION_MS - WORK_TRANSITION_MS
+        ? smoothStep((WORK_DURATION_MS - elapsed) / WORK_TRANSITION_MS)
+        : 1
+  const x = (-20 + 40 * scanProgress) * transition
+  const y = 12 * transition
+  const eyeOpen =
+    lineElapsed >= WORK_BLINK_START_MS && lineElapsed < WORK_BLINK_START_MS + SINGLE_BLINK_DURATION_MS
+      ? getSingleBlinkOpen(lineElapsed - WORK_BLINK_START_MS)
+      : 1
+
+  face.emotion = Emotion.NEUTRAL
+  face.eyes.left.open = eyeOpen
+  face.eyes.right.open = eyeOpen
+  face.eyes.left.gazeX = x / 2
+  face.eyes.right.gazeX = x / 2
+  face.eyes.left.gazeY = y / 2
+  face.eyes.right.gazeY = y / 2
+}
+
 function isAnimationName(value) {
   return typeof value === 'string' && ANIMATION_NAMES.includes(value)
 }
@@ -252,10 +401,14 @@ function createAnimationStateMachine() {
   let state = 'idle'
   let elapsed = 0
   let randomEnabled = true
+  let visualListener = null
+
+  const notifyVisuals = () => visualListener?.(state, elapsed)
 
   const enter = (nextState) => {
     state = nextState
     elapsed = 0
+    notifyVisuals()
   }
 
   const durationFor = () => {
@@ -267,6 +420,8 @@ function createAnimationStateMachine() {
       case 'happy':
       case 'angry':
         return MOOD_DURATION_MS
+      case 'working':
+        return WORK_DURATION_MS
       default:
         return null
     }
@@ -293,6 +448,10 @@ function createAnimationStateMachine() {
       if (state === 'idle') elapsed = 0
       return status()
     },
+    setVisualListener(listener) {
+      visualListener = listener
+      notifyVisuals()
+    },
     status,
     tick(tickMillis, face) {
       elapsed += tickMillis
@@ -316,10 +475,14 @@ function createAnimationStateMachine() {
         case 'angry':
           applyMoodAnimation(face, Emotion.ANGRY, elapsed)
           break
+        case 'working':
+          applyWorkingPose(face, elapsed)
+          break
         default:
           applyIdlePose(face)
           break
       }
+      notifyVisuals()
     },
   }
 }
@@ -345,6 +508,8 @@ function registerChyModControls(machine) {
               id: 'randomEnabled',
               kind: 'toggle',
               command: 'chymod.random',
+              statusKey: 'randomEnabled',
+              label: 'Enable random animation every 3 seconds',
             },
           ],
         }
@@ -381,6 +546,7 @@ export function onContextCreated(robot, option) {
   // other standard runtime services before installing the custom face.
   initializeDefaultContext(robot, option)
   robot.ui.setFace(new CapsuleFace({ machine }))
+  robot.ui.addEffect(new WorkingEffect({ machine }), 'chymod-working')
   robot.face.setColor('primary', 0xff, 0xff, 0xff)
   robot.face.setColor('secondary', 0x00, 0x00, 0x00)
 }

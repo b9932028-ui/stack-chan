@@ -9,6 +9,8 @@ const dependenciesByPlatform = {
   ],
 }
 
+const windowsNinjaResponseFileSetting = 'set(CMAKE_NINJA_FORCE_RESPONSE_FILE ON)'
+
 /**
  * Seeds a generated CoreS3 IDF manifest before Moddable adds dependencies.
  * @param {{outputDirectory: string, platformName: string, applicationName: string, mode: string}} options - Build output configuration.
@@ -43,7 +45,12 @@ export function prepareCoreS3IdfDependencies({ outputDirectory, platformName, ap
   }
 
   for (const [name, version] of dependencies) {
-    if (manifest.includes(`  ${name}:`)) continue
+    const escapedName = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const dependencyPattern = new RegExp(`^  ${escapedName}:.*$`, 'm')
+    if (dependencyPattern.test(manifest)) {
+      manifest = manifest.replace(dependencyPattern, `  ${name}: ${version}`)
+      continue
+    }
     if (!manifest.endsWith('\n')) manifest += '\n'
     manifest += `  ${name}: ${version}\n`
   }
@@ -54,4 +61,62 @@ export function prepareCoreS3IdfDependencies({ outputDirectory, platformName, ap
   if (manifest !== originalManifest) writeFileSync(manifestPath, manifest)
   console.log(`[stack-chan] prepared IDF dependencies: ${manifestPath}`)
   return manifestPath
+}
+
+/**
+ * Prepares Moddable's generated ESP-IDF main component to use Ninja response
+ * files on Windows. ESP-SR and ESP-DSP expose enough include directories to
+ * exceed CreateProcess's command-line limit before GCC can start.
+ * @param {{outputDirectory: string, platformName: string, applicationName: string, mode: string, moddableDirectory?: string}} options - Build output configuration.
+ * @returns {string[]|null} Generated CMake files, or null outside Windows.
+ */
+export function prepareWindowsNinjaResponseFiles({
+  outputDirectory,
+  platformName,
+  applicationName,
+  mode,
+  moddableDirectory = process.env.MODDABLE,
+}) {
+  if (process.platform !== 'win32') return null
+  if (!moddableDirectory) throw new Error('MODDABLE environment variable is required')
+  if (platformName !== 'm5stackchan_cores3') return null
+
+  const templateDirectory = path.join(moddableDirectory, 'build', 'devices', 'esp32', 'xsProj-esp32s3')
+  const projectDirectory = path.dirname(
+    generatedMainDirectory({ outputDirectory, platformName, applicationName, mode }),
+  )
+  const files = [
+    prepareResponseFileCMake({
+      templateDirectory,
+      projectDirectory,
+      relativePath: 'CMakeLists.txt',
+      marker: 'project(',
+    }),
+    prepareResponseFileCMake({
+      templateDirectory,
+      projectDirectory,
+      relativePath: path.join('main', 'CMakeLists.txt'),
+      marker: 'idf_component_register(',
+    }),
+  ]
+  console.log(`[stack-chan] enabled Windows Ninja response files: ${files.join(', ')}`)
+  return files
+}
+
+function prepareResponseFileCMake({ templateDirectory, projectDirectory, relativePath, marker }) {
+  const templatePath = path.join(templateDirectory, relativePath)
+  const destinationPath = path.join(projectDirectory, relativePath)
+  const template = readFileSync(templatePath, 'utf8')
+  if (!template.includes(marker)) throw new Error(`Unexpected Moddable ESP32 CMake template: ${templatePath}`)
+  const generated = template.replace(marker, `${windowsNinjaResponseFileSetting}\n\n${marker}`)
+
+  mkdirSync(path.dirname(destinationPath), { recursive: true })
+  if (!existsSync(destinationPath) || readFileSync(destinationPath, 'utf8') !== generated) {
+    writeFileSync(destinationPath, generated)
+  }
+  return destinationPath
+}
+
+function generatedMainDirectory({ outputDirectory, platformName, applicationName, mode }) {
+  return path.join(outputDirectory, 'tmp', 'esp32', platformName, mode, applicationName, 'xsProj-esp32s3', 'main')
 }

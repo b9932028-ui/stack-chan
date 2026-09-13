@@ -8,6 +8,7 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
+import { ModDeployCard } from '@/features/chymod/mod-deploy-card'
 import { useUSBControl } from '@/features/chymod/use-usb-control'
 
 type ActionControl = {
@@ -21,6 +22,8 @@ type ToggleControl = {
   id: string
   kind: 'toggle'
   command: string
+  statusKey?: 'randomEnabled' | 'wakeEnabled'
+  label?: string
 }
 
 type ChyModDescriptor = {
@@ -35,6 +38,10 @@ type ChyModStatus = {
   elapsedMs: number
   durationMs: number | null
   nextRandomInMs: number | null
+  wakeEnabled?: boolean
+  wakeError?: string | null
+  wakeHitCount?: number
+  lastWakePhrase?: string | null
 }
 
 const animationLabels: Record<string, string> = {
@@ -43,6 +50,16 @@ const animationLabels: Record<string, string> = {
   lookAround: '四處看看',
   happy: '開心',
   angry: '生氣',
+  working: '工作中',
+}
+
+/**
+ * The MOD describes which controls exist; their wording stays here so the page
+ * reads in the viewer's language instead of the firmware's fixed English.
+ */
+const toggleLabels: Record<string, string> = {
+  randomEnabled: '啟用每3秒亂數播放',
+  wakeEnabled: '啟用「Hi Copilot」/「Hey Copilot」喚醒動畫',
 }
 
 function isDescriptor(value: unknown): value is ChyModDescriptor {
@@ -103,7 +120,7 @@ export function ChyModPage() {
 
   return (
     <div className="page-container grid gap-6 py-8 lg:grid-cols-[18rem_minmax(0,1fr)]">
-      <aside>
+      <aside className="grid content-start gap-5">
         <Card>
           <CardHeader>
             <CardTitle>ChyMOD</CardTitle>
@@ -126,6 +143,7 @@ export function ChyModPage() {
             </p>
           </CardContent>
         </Card>
+        <ModDeployCard controlConnected={usb.connected} disconnectControl={usb.disconnect} />
       </aside>
 
       <main className="grid min-w-0 gap-5">
@@ -157,6 +175,11 @@ export function ChyModPage() {
                 <AlertDescription>{usb.error?.message ?? commandError}</AlertDescription>
               </Alert>
             )}
+            {status?.wakeError && (
+              <Alert variant="destructive">
+                <AlertDescription>{t('喚醒辨識失敗：{error}', { error: status.wakeError })}</AlertDescription>
+              </Alert>
+            )}
 
             {status && (
               <dl className="grid grid-cols-2 gap-3 rounded-lg border bg-muted/30 p-4 text-sm sm:grid-cols-4">
@@ -180,6 +203,18 @@ export function ChyModPage() {
                     {status.nextRandomInMs === null ? '—' : `${(status.nextRandomInMs / 1000).toFixed(1)}s`}
                   </dd>
                 </div>
+                <div>
+                  <dt className="text-muted-foreground">{t('喚醒辨識')}</dt>
+                  <dd className="font-medium">{t(status.wakeEnabled ? '聆聽中' : '已關閉')}</dd>
+                </div>
+                <div>
+                  <dt className="text-muted-foreground">{t('喚醒次數')}</dt>
+                  <dd className="font-medium">{status.wakeHitCount ?? 0}</dd>
+                </div>
+                <div className="col-span-2">
+                  <dt className="text-muted-foreground">{t('最後喚醒語句')}</dt>
+                  <dd className="font-medium">{status.lastWakePhrase ?? '—'}</dd>
+                </div>
               </dl>
             )}
 
@@ -188,7 +223,7 @@ export function ChyModPage() {
                 return (
                   <section key={control.id} className="grid gap-3">
                     <Label>{t('立即播放')}</Label>
-                    <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-5">
+                    <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
                       {control.options.map((option) => (
                         <Button
                           key={option}
@@ -208,11 +243,17 @@ export function ChyModPage() {
                 <section key={control.id} className="flex items-center gap-3 rounded-lg border p-4">
                   <Checkbox
                     id={`chymod-${control.id}`}
-                    checked={status?.randomEnabled ?? false}
+                    checked={
+                      status
+                        ? Boolean(status[control.statusKey ?? (control.id === 'wakeEnabled' ? 'wakeEnabled' : 'randomEnabled')])
+                        : false
+                    }
                     disabled={!usb.connected || busyControl !== null}
                     onCheckedChange={(checked) => void runCommand(control.id, control.command, checked === true)}
                   />
-                  <Label htmlFor={`chymod-${control.id}`}>{t('啟用每3秒亂數播放')}</Label>
+                  <Label htmlFor={`chymod-${control.id}`}>
+                    {toggleLabels[control.id] ? t(toggleLabels[control.id]) : (control.label ?? control.id)}
+                  </Label>
                 </section>
               )
             })}

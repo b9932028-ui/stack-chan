@@ -18,7 +18,11 @@ let subprocessEnvironment = process.env
 if (targetsM5StackChanCoreS3(args)) {
   try {
     const versionSdkconfig = prepareCoreS3VersionSdkconfig()
-    subprocessEnvironment = { ...process.env, SDKCONFIGPATH: versionSdkconfig.directory }
+    subprocessEnvironment = {
+      ...process.env,
+      SDKCONFIGPATH: versionSdkconfig.directory,
+      ...(process.platform === 'win32' ? { PYTHONUTF8: '1' } : {}),
+    }
   } catch (error) {
     console.error(`[stack-chan] CoreS3 firmware version could not be prepared: ${error.message}`)
     process.exit(1)

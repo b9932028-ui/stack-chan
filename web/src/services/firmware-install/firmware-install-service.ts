@@ -92,13 +92,17 @@ export async function installFirmware(
     const chipFamily = canonicalChipFamily(chip)
     onLog(`検出したデバイス: ${chip}`)
 
-    const manifest = await loadManifest(board.manifestUrl)
+    const source = board.source
+    const manifest = source ? validateManifest(await source.readManifest()) : await loadManifest(board.manifestUrl)
     const build = manifest.builds.find((candidate) => candidate.chipFamily.toUpperCase() === chipFamily)
     if (!build) {
       throw new AppError(
         'chip-mismatch',
         `${board.label}用ファームウェアは${chipFamily}へ書き込めません。ボード選択を確認してください。`
       )
+    }
+    if (build.parts.length === 0) {
+      throw new AppError('firmware-empty', `${chipFamily}へ書き込むファームウェアがありません`)
     }
 
     const device: FirmwareDeviceInfo = {
@@ -121,7 +125,11 @@ export async function installFirmware(
 
     onStage('installing')
     onLog('ファームウェアイメージを取得しています…')
-    const files = await Promise.all(build.parts.map((part) => loadPart(part, board.manifestUrl)))
+    const files = await Promise.all(
+      build.parts.map(async (part) =>
+        source ? { address: part.offset, bytes: await source.readPart(part) } : loadPart(part, board.manifestUrl)
+      )
+    )
     const fileSizes = files.map((file) => file.bytes.length)
     const totalBytes = fileSizes.reduce((total, size) => total + size, 0)
     const completedBefore = fileSizes.map((_, index) =>

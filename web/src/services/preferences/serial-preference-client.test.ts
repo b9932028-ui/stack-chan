@@ -22,14 +22,16 @@ describe('SerialPreferenceClient', () => {
       open: vi.fn(async () => {}),
       close: vi.fn(async () => {}),
     }
+    const requestPort = vi.fn(async () => port)
     Object.defineProperty(navigator, 'serial', {
       configurable: true,
-      value: { requestPort: vi.fn(async () => port) },
+      value: { requestPort },
     })
     const onValue = vi.fn()
     const client = new SerialPreferenceClient({ onValue })
 
     await client.connect()
+    expect(requestPort).toHaveBeenCalledOnce()
     expect(writes).toEqual(['{"_hello":"stackchan-usb-v1"}\n'])
 
     receive?.enqueue(
@@ -49,5 +51,26 @@ describe('SerialPreferenceClient', () => {
     expect(writes.at(-1)).toBe('{"_batch":{"ui.language":"zh-CN"}}\n')
     await client.disconnect()
     expect(port.close).toHaveBeenCalledOnce()
+  })
+
+  it('can reconnect an already-authorized port without opening the port picker', async () => {
+    const port = {
+      readable: new ReadableStream<Uint8Array>(),
+      writable: new WritableStream<Uint8Array>(),
+      open: vi.fn(async () => {}),
+      close: vi.fn(async () => {}),
+    }
+    const requestPort = vi.fn()
+    Object.defineProperty(navigator, 'serial', {
+      configurable: true,
+      value: { requestPort },
+    })
+    const client = new SerialPreferenceClient({ onValue: vi.fn() })
+
+    await client.connect(port)
+    expect(client.getPort()).toBe(port)
+    expect(requestPort).not.toHaveBeenCalled()
+
+    await client.disconnect()
   })
 })
