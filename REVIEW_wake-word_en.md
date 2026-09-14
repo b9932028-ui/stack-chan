@@ -1,15 +1,20 @@
 # Wake Word Investigation — "Hi Copilot" / "Hey Copilot"
 
-Status: **esp-sr abandoned; microWakeWord working on device with the stock
-`okay_nabu` model. Only the custom-phrase training remains.**
+Status: **Done. A custom-trained "Hey Copilot" microWakeWord model runs on
+device and triggers from the device microphone.** esp-sr was abandoned.
 Hardware: M5Stack CoreS3 (ESP32-S3, 16 MB flash, 8 MB Quad PSRAM @ 40 MHz)
 Firmware: Moddable SDK (XS) on ESP-IDF 6.0
-Date of investigation: 2026-09-13
+Date of investigation: 2026-09-13; model trained and deployed 2026-09-14
 
 > **Result up front.** The three de-risking steps in §7 all passed. Front end
 > 0.74 ms + inference 6.8 ms = **7.5 ms against a 30 ms budget (25%)**, zero
 > dropped samples, and the stock `okay_nabu` model triggers reliably from the
-> device microphone. The architecture is proven; what is left is data.
+> device microphone.
+>
+> Step 4 is also done: `hey_copilot.tflite` (62,304 B) was trained TTS-only on
+> an RTX 5070 in 2 h 40 min and replaced `okay_nabu` in firmware. On its test
+> set it reaches **2.84% false rejects at 0 false accepts/hour** (cutoff 0.87).
+> The full training record is in **§9**.
 
 ---
 
@@ -245,16 +250,20 @@ reimplements the same plumbing, and §7 records the de-interleaving trap it
 contains so nothing is lost by discarding it.
 
 **Superseded.** The state above describes the tree immediately after the esp-sr
-removal. microWakeWord has since been implemented on branch
-`feat/micro-wake-word`:
+removal. microWakeWord has since been implemented and merged into `develop`
+(commits `b8dfd756` and `f4902558`), and `git stash@{0}` has served its purpose:
 
 - `platforms/m5stackchan-cores3/micro-wake-word.cpp` — TFLM component: 20 ops,
   `MicroResourceVariables`, 40 KB tensor arena, ring buffer and inference task,
   plus a `stats()` call exposing front-end and inference timing, PCM level,
   dropped samples and probabilities
 - `platforms/m5stackchan-cores3/micro-wake-word.js` — `AudioIn` capture
+- `platforms/m5stackchan-cores3/hey_copilot.tflite` + `hey_copilot.NOTICE.md` —
+  the custom model now loaded by firmware (§9), cutoff lowered to 0.87
 - `platforms/m5stackchan-cores3/okay_nabu.tflite` + `okay_nabu.NOTICE.md` —
-  stock Apache-2.0 model with attribution and SHA-256
+  stock Apache-2.0 model with attribution and SHA-256, kept in the tree as a
+  known-good fallback but **no longer packaged** (`audio/manifest.json` `data`
+  points at `hey_copilot`)
 - `audio-input-lock.ts` — the single-owner microphone guard, restored
 - `mod.js` / ChyMOD console — `chymod.wake` and the status fields, restored,
   now also surfacing `wakeStats`
@@ -419,7 +428,12 @@ reported 5 hits with the correct `lastWakePhrase`.
 > flash of unchanged source fixed it. When behaviour contradicts the source,
 > confirm what is actually running before debugging the code.
 
-### Step 4 — Train "Hey Copilot" (open-ended) — **the only work left**
+### Step 4 — Train "Hey Copilot" — **DONE**
+
+> The guidance below was written **before** training and is kept as the plan of
+> record. §9 records what was actually done; where they differ, §9 wins. In
+> short: plain spelling instead of IPA, no confusable negatives and no real
+> recordings were needed for a usable first model.
 
 **Use `malonestar/custom-micro-wake-word-model`** rather than the upstream
 notebook. It is a fork of microWakeWord set up for Windows + WSL2 + NVIDIA, and
@@ -516,11 +530,198 @@ construction. Unverified: recognition latency and English custom-word accuracy.
 - `robot.record()` still has the stereo-interleaving bug described in §3.1. It
   writes a WAV header declaring one channel while the data is interleaved
   stereo, so recordings play back wrong. Independent of wake word work.
-- The single-owner microphone guard was removed along with the wake feature. If
-  two `AudioIn` consumers ever coexist again, the IDF assert-and-reboot returns.
-  The implementation is in `git stash@{0}`.
+- ~~The single-owner microphone guard was removed along with the wake feature.~~
+  Restored as `audio-input-lock.ts` with microWakeWord; `git stash@{0}` can be
+  dropped.
+- `hey_copilot.tflite` has not had an on-device false-accept measurement. The
+  0 FA/h figure comes from ~5 h of test ambience (§9.6). Watch for false
+  triggers from TV or conversation; the cutoff can be raised toward 0.90–0.93
+  without retraining.
+- `okay_nabu.tflite` is still in the tree but unused. Delete it once the custom
+  model has proven itself, or keep it as the fallback.
+- The header comment of `micro-wake-word.cpp` still credits the Okay Nabu
+  manifest. That remains true for the post-processing parameters (sliding
+  window, refractory period); only the cutoff now differs.
 - M5Stack documents the CoreS3 codec as ES7210 with "dual-microphone input".
   Instrumentation showed both I2S slots carrying identical data, which suggests
   a register configuration rather than a hardware limit. If a second physical
   microphone exists, a 2-mic AFE could improve far-field pickup at no hardware
   cost. Not verified — would need the schematic.
+
+---
+
+## 9. Training record — `hey_copilot.tflite`
+
+### 9.1 Environment
+
+| | |
+|---|---|
+| Host | Windows 11, 31.2 GB RAM, RTX 5070 (12 GB, compute capability 12.0) |
+| Runtime | WSL2 Ubuntu, Python 3.12 venv (uv), TensorFlow 2.21 + CUDA 12.9 |
+| Framework | `OHF-Voice/micro-wake-word` `4665173`, with malonestar's three patches overlaid (`clips.py`, `test.py`, `train.py`, see Step 4) |
+| TTS | `rhasspy/piper-sample-generator` `2971426`, voice `en_US-libritts_r-medium` |
+| WSL memory cap | **`memory=26GB`** in `%USERPROFILE%\.wslconfig` (default 15 GB is not enough, §9.7) |
+
+The training scripts live outside this repository, in `E:\MicroWave`:
+
+| script | does |
+|---|---|
+| `1b-generate-parallel.ps1` | parallel Piper generation into shards, merged with unique names; `-Target` tops up to a total |
+| `2-download-negatives.ps1` + `fetch_negatives.py` | augmentation audio and negative feature sets, resumable |
+| `3-train.ps1` + `build_features.py` + `write_config.py` | features → `training_parameters.yaml` → train → quantize → streaming ROC |
+| `inspect_tflite.py` | compares a trained model's tensors and op set against `okay_nabu.tflite` |
+| `watch_memory.sh` | samples WSL memory every 10 s, so an OOM leaves evidence |
+
+Blackwell has no prebuilt TensorFlow kernels: the first GPU run JIT-compiles from
+PTX and sits silent for a long time before step 1. It is not a hang.
+
+### 9.2 Positive samples
+
+- **50,000** clips of `Hey Copilot`, plain spelling, `--noise-scale-ws 0.4`,
+  3 parallel workers.
+- espeak-ng (Piper's G2P) already renders the phrase as `hˈeɪ kˈoʊpaɪlət`.
+  Hyphenating or spacing it ("co-pilot") makes it **worse** by adding a second
+  stress; the "cop-pilot" mispronunciation seen earlier came from a different
+  TTS engine. No IPA input was needed.
+- No confusable negatives and no real recordings.
+
+### 9.3 Augmentation and features
+
+Augmentation audio: MIT impulse responses, one parquet shard of AudioSet
+(`agkphysics/AudioSet`, `data/bal_train/NN.parquet`; the notebook's `.tar` URL is
+gone), and FMA extra-small. Each clip is padded to 3.2 s with 0.195–0.205 s
+jitter, background SNR −5 to 10 dB, with `Gain` 1.0, `AddBackgroundNoise` 0.75,
+`RIR` 0.5 and EQ / distortion / pitch / band-stop / colour noise at 0.1 each.
+
+| split | repetition | slide frames | spectrograms | build time |
+|---|---|---|---|---|
+| training | 2 | 10 | 800,000 (37 GB) | 42 min |
+| validation | 1 | 10 | 50,000 | 2 min 40 s |
+| testing | 1 | 1 | 5,000 | 1 min 33 s |
+
+malonestar uses training repetition 3; 2 was enough here.
+
+Negatives are microWakeWord's pre-generated feature sets
+(`kahrendt/microwakeword` on Hugging Face):
+
+| set | sampling weight | role |
+|---|---|---|
+| positives | 2.0 | truth |
+| `speech` | 10.0 | negative |
+| `dinner_party` | 10.0 | negative |
+| `no_speech` | 5.0 | negative |
+| `dinner_party_eval` | 0.0 | ambient validation / test only |
+
+### 9.4 Model and schedule
+
+```
+mixednet --pointwise_filters 64,64,64,64 --repeat_in_block 1,1,1,1 \
+  --mixconv_kernel_sizes '[5],[7,11],[9,15],[23]' --residual_connection 0,0,0,0 \
+  --first_conv_filters 32 --first_conv_kernel_size 5 --stride 3
+```
+
+26,049 parameters — the same geometry as the stock v2 models.
+
+| | phase 1 | phase 2 |
+|---|---|---|
+| steps | 25,000 | 20,000 |
+| learning rate | 0.001 | 0.0005 |
+| negative class weight | 50 | 60 |
+
+Batch 256, evaluation every 500 steps, best checkpoint selected by
+`ambient_false_positives_per_hour` below 0.4, then `average_viable_recall`.
+
+Wall time **2 h 40 min** with features already built. About 80 s per 500
+steps plus ~30 s per evaluation.
+
+### 9.5 Output
+
+- `stream_state_internal_quant.tflite` → `hey_copilot.tflite`, 62,304 B
+- Best weights from **step 36,000** (0 ambient false positives on validation)
+- Input `[1,3,40] int8` (scale 0.10196, zero point −128), output `[1,1] uint8`
+  (scale 0.00390625) and the 13 ops are **identical** to `okay_nabu.tflite`, all
+  already registered in `micro-wake-word.cpp`. No runtime change was needed.
+
+### 9.6 Results
+
+Streaming quantized model on the test set:
+
+| cutoff | false reject rate | false accepts / hour |
+|---|---|---|
+| **0.87** | **2.84%** | **0.000** |
+| 0.79 | 2.50% | 0.187 |
+| 0.58 | 1.92% | 0.375 |
+| 0.49 | 1.66% | 0.562 |
+| 0.43 | 1.52% | 0.937 |
+
+Read these conservatively:
+
+- The test positives are Piper TTS too, from the same generator as training.
+  Real voices will miss more often.
+- The false-accept figure rests on ~5.3 h of ambience (resolution 0.187 FA/h).
+  "0" means "none in 5 hours", not "never".
+
+On device the model triggers from a real voice. It was not hard to trigger at
+the Okay Nabu cutoff of 0.97, but 0.97 lies above every point in this ROC, so
+firmware now uses **0.87**, the highest reported cutoff.
+
+### 9.7 Problems hit, and what they cost
+
+1. **OOM at the second evaluation.** Training died at step 1000 with exit 9, and
+   WSL restarted, losing `dmesg`. A memory sampler showed each evaluation
+   loading the whole validation set into RAM with several copies alive at once:
+
+   | | used | available | swap |
+   |---|---|---|---|
+   | before evaluation | 7.5 GB | 8.1 GB | 0 |
+   | peak | 15.3 GB | **215 MB** | 3.8 GB |
+
+   Not a leak — the baseline settles back to ~7 GB — but each evaluation needs
+   another 7–9 GB. **Shrinking validation 5x saved only ~2 GB**, so the fix is
+   the WSL cap, as malonestar's README also specifies (`memory=28GB` on a 32 GB
+   host). The first diagnosis blamed the validation set alone and was wrong.
+2. **Parallel generation was OOM-killed** when a training test ran alongside it.
+   Generation is CPU-bound and training GPU-bound, but both share WSL's RAM.
+   `1b-generate-parallel.ps1` now merges whatever shards survived before
+   reporting failure, so a re-run continues instead of restarting.
+3. **Dependency breakage**, each of which would have failed hours in:
+   - AudioSet moved from `.tar` to parquet shards.
+   - `datasets` requires torchcodec even with `decode=False` on streaming
+     datasets; replaced with direct `huggingface_hub` downloads.
+   - piper-sample-generator pins `audiomentations==0.33.0`; microWakeWord needs
+     `AddColorNoise`. Upgraded to 0.43.1 after confirming Piper's generation path
+     never imports it.
+   - `tensorboard` is not in microWakeWord's `setup.py`, but training calls
+     `tf.summary.scalar` at the first evaluation.
+   - With `eval_step_interval` 500, a short smoke run saves no `best_weights`,
+     so conversion fails; `write_config.py --eval-interval` exists for that.
+4. **There is no real resume.** `--restore_checkpoint 1` restores weights and
+   optimizer state from `restore/`, but the step counter, the learning-rate
+   phase and the best-so-far score all reset. The first evaluation after a
+   restart **overwrites `best_weights.weights.h5`** however bad it is — back it
+   up first. If an interrupted run already has good best weights,
+   `3-train.ps1 -ConvertOnly` is usually the better move than retraining.
+   `restore/` also survives between runs, so a "fresh" run silently warm-starts
+   from whatever was left there; clear it for a clean start.
+5. **Stale firmware build.** After changing the packaged model, an incremental
+   `npm run deploy` regenerated the makefile but skipped the Moddable step and
+   flashed the previous binary, still containing `okay_nabu.tflite`. Checking
+   `mc.resources.c` caught it. After a resource change, run `npm run clean`,
+   then `npm run build`, then deploy — `deploy` alone refuses to run on a clean
+   tree ("Please build before deploy").
+6. The end-to-end smoke test of `3-train.ps1` used 300 clips, which is far too
+   small to reach the memory ceiling. It proved the pipeline, not the capacity.
+
+### 9.8 Reproducing
+
+```powershell
+cd E:\MicroWave
+.\1b-generate-parallel.ps1 -Target 50000   # ~50,000 positives
+.\2-download-negatives.ps1                 # resumable
+.\3-train.ps1                              # or -SkipFeatures to reuse features
+```
+
+Then copy
+`dataset\trained_models\wakeword\tflite_stream_state_internal_quant\stream_state_internal_quant.tflite`
+over `hey_copilot.tflite`, update the SHA-256 in `hey_copilot.NOTICE.md`, and do
+a clean firmware build.
