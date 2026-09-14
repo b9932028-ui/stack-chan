@@ -116,6 +116,17 @@ Configuration is managed through preferences system with these key areas:
 - `ui`: Piu UI and face selection
 - `wifi`: Network configuration
 
+## CoreS3 Speaker Amplifier Contract
+
+On `m5stackchan_cores3`, the AW88298 speaker amplifier is powered down whenever nothing is playing. The microphone and speaker share I2S clocks, so while the always-on wake word records, an idle amplifier left powered makes the speaker hiss; lowering its volume does not help, powering it down does. The control lives in `firmware/host/platforms/m5stackchan_cores3/speaker-amp.js` and `speaker-amp.c`, and the board setup installs it as `globalThis.stackchanSpeakerAmp` with reference-counted `acquire()` and `release()`.
+
+- Every playback path must hold the amplifier while audio plays: call `acquire()` immediately before `AudioOut.start()` and `release()` after `stop()` or `close()`. A path that skips this is silent on this board. On boards without the control the hold is a no-op.
+- Already covered: tone and WAV playback in `firmware/host/modules/audio/speaker.ts`; `tts-playback-lifecycle.ts`, which covers every TTS engine that plays through `lifecycle.openAudio` and `lifecycle.onReady` (local, remote, VoiceVox, VoiceVox web, ElevenLabs, OpenAI); `stackchan-voice/tts-stackchan-voice.ts`; WebRadio in `platforms/m5stackchan-cores3/web-radio-audio-out.ts`; and USB speaker audio in `firmware/host/modules/usb-audio/worker-bridge.ts`. Any new code that constructs `AudioOut` directly must add the hold.
+- The default `stackchan-voice` TTS speaks Japanese only (`stackchan-ja.aqd`). English speech needs another engine, such as ElevenLabs, OpenAI, or a remote or local TTS; those already hold the amplifier through the playback lifecycle.
+- Do not open I2C address `0x36` from JavaScript. Moddable's CoreS3 setup already owns that ECMA-419 handle, and a second one fails with `duplicate address`. Use the native functions in `speaker-amp.c`, which attach to the existing ESP-IDF I2C bus.
+- Do not rely on remapping `pins/audioout` or `embedded:io/audio/out` in the platform manifest to wrap playback: Moddable's own mappings take precedence and the override is silently ignored. Confirm what a module specifier compiles from in `firmware/dist/tmp/esp32/m5stackchan_cores3/release/stack-chan-host/makefile`.
+- Verify amplifier changes on the device, not only by build success: the boot trace must show `[m5stackchan] speaker amplifier powered down until playback`, and SYSCTRL (register `0x04`) must read `0x4003` while idle and `0x4040` while audio plays.
+
 ## Git Hooks
 
 Uses lefthook for pre-commit hooks:

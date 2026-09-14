@@ -32,6 +32,30 @@ export type TTSPlaybackLifecycle = {
   fail(error: unknown): void
 }
 
+type SpeakerAmp = { acquire(): void; release(): void }
+
+/**
+ * Keeps the CoreS3 speaker amplifier powered while playback runs. The board setup
+ * powers it down when idle (host/platforms/m5stackchan_cores3/speaker-amp.js); on
+ * other boards there is no amplifier control and this does nothing.
+ */
+function holdSpeakerAmp() {
+  const amp = (globalThis as typeof globalThis & { stackchanSpeakerAmp?: SpeakerAmp }).stackchanSpeakerAmp
+  let held = false
+  return {
+    acquire() {
+      if (held || !amp) return
+      held = true
+      amp.acquire()
+    },
+    release() {
+      if (!held) return
+      held = false
+      amp?.release()
+    },
+  }
+}
+
 function closeResource(close: (() => void) | undefined): void {
   try {
     close?.()
@@ -44,6 +68,7 @@ export function createTTSPlaybackLifecycle(owner: TTSPlaybackOwner, callback?: T
   let completed = false
   let streamer: Closable | undefined
   const cleanupTasks: (() => void)[] = []
+  const amp = holdSpeakerAmp()
 
   const finish = (error?: unknown): void => {
     if (completed) return
@@ -56,6 +81,7 @@ export function createTTSPlaybackLifecycle(owner: TTSPlaybackOwner, callback?: T
     closeResource(() => streamer?.close?.())
     closeResource(() => owner.audio?.close())
     owner.audio = undefined
+    amp.release()
 
     owner.onDone?.()
     callback?.(error)
@@ -86,8 +112,13 @@ export function createTTSPlaybackLifecycle(owner: TTSPlaybackOwner, callback?: T
     onReady(state: boolean): void {
       if (completed || !owner.audio) return
       trace(`Ready: ${state}\n`)
-      if (state) owner.audio.start()
-      else owner.audio.stop()
+      if (state) {
+        amp.acquire()
+        owner.audio.start()
+      } else {
+        owner.audio.stop()
+        amp.release()
+      }
     },
     onError(error: unknown): void {
       trace('ERROR: ', String(error), '\n')

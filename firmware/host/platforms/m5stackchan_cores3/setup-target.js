@@ -1,4 +1,5 @@
 import { getAxp2101Power } from 'axp2101-power-capture'
+import { createSpeakerAmp } from 'stackchan-speaker-amp'
 
 // Mirrors the CoreS3 power-rail setup used by M5Stack/StackChan firmware
 // (`firmware/main/hal/board/stackchan.cc` near the AXP2101 init path) and the
@@ -37,6 +38,13 @@ export default function (done) {
     patchStackChanPower()
   } catch (error) {
     trace(`[m5stackchan] AXP2101 power patch failed: ${error}\n`)
+  }
+  // The inherited setup has also powered the AW88298 on; keep it off until an AudioOut starts.
+  try {
+    globalThis.stackchanSpeakerAmp = createSpeakerAmp()
+    trace('[m5stackchan] speaker amplifier powered down until playback\n')
+  } catch (error) {
+    trace(`[m5stackchan] speaker amplifier control unavailable: ${error}\n`)
   }
   done?.()
 }

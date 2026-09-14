@@ -5,6 +5,30 @@ import AudioOut from 'pins/audioout'
 
 const WAV_HEADER_SIZE = 44
 
+type SpeakerAmp = { acquire(): void; release(): void }
+
+/**
+ * Keeps the CoreS3 speaker amplifier powered while one output plays. The board
+ * setup powers it down when idle (host/platforms/m5stackchan_cores3/speaker-amp.js);
+ * on other boards there is no amplifier control and this does nothing.
+ */
+function holdSpeakerAmp() {
+  const amp = (globalThis as typeof globalThis & { stackchanSpeakerAmp?: SpeakerAmp }).stackchanSpeakerAmp
+  let held = false
+  return {
+    acquire() {
+      if (held || !amp) return
+      held = true
+      amp.acquire()
+    },
+    release() {
+      if (!held) return
+      held = false
+      amp?.release()
+    },
+  }
+}
+
 export type ToneProperty = {
   volume?: number
 }
@@ -21,15 +45,18 @@ export default class Speaker {
       sampleRate: 24000,
       bitsPerSample: 16,
     })
+    const amp = holdSpeakerAmp()
     return new Promise((resolve) => {
       audio.enqueue(0, AudioOut.Flush)
       audio.enqueue(0, AudioOut.Volume, Math.round((volume ?? this.volume) * 256))
       audio.enqueue(0, AudioOut.Tone, hz, (audio.sampleRate * duration) / 1000)
       audio.enqueue(0, AudioOut.Callback, 1)
+      amp.acquire()
       audio.start()
 
       audio.callback = (_id) => {
         audio.close()
+        amp.release()
         resolve()
       }
     })
@@ -52,6 +79,7 @@ export default class Speaker {
       new Uint8Array(shared).set(new Uint8Array(buffer, WAV_HEADER_SIZE))
 
       const audio = new AudioOut({ streams: 1, sampleRate, numChannels, bitsPerSample })
+      const amp = holdSpeakerAmp()
       return await new Promise<boolean>((resolve) => {
         audio.enqueue(0, AudioOut.Flush)
         audio.enqueue(0, AudioOut.Volume, Math.round(this.volume * 256))
@@ -59,9 +87,11 @@ export default class Speaker {
         // AudioOut.enqueue is typed for HostBuffer; the native layer also accepts a SharedArrayBuffer.
         audio.enqueue(0, AudioOut.RawSamples, shared as unknown as HostBuffer)
         audio.enqueue(0, AudioOut.Callback, 1)
+        amp.acquire()
         audio.start()
         audio.callback = () => {
           audio.close()
+          amp.release()
           resolve(true)
         }
       })

@@ -27,6 +27,30 @@ type PCMChunk = {
   samples: number
 }
 
+type SpeakerAmp = { acquire(): void; release(): void }
+
+/**
+ * Keeps the CoreS3 speaker amplifier powered while one utterance plays. The board
+ * setup powers it down when idle (host/platforms/m5stackchan_cores3/speaker-amp.js);
+ * on other boards there is no amplifier control and this does nothing.
+ */
+function holdSpeakerAmp() {
+  const amp = (globalThis as typeof globalThis & { stackchanSpeakerAmp?: SpeakerAmp }).stackchanSpeakerAmp
+  let held = false
+  return {
+    acquire() {
+      if (held || !amp) return
+      held = true
+      amp.acquire()
+    },
+    release() {
+      if (!held) return
+      held = false
+      amp?.release()
+    },
+  }
+}
+
 export class TTS {
   onPlayed?: TTSPlaybackListener
   onDone?: TTSDoneListener
@@ -87,15 +111,18 @@ export class TTS {
       })
       output.volume = volume ?? this.volume
       this.#output = output
+      const amp = holdSpeakerAmp()
       lifecycle.addCleanup(() => {
         try {
           output.stop()
         } finally {
           output.close()
+          amp.release()
           if (this.#output === output) this.#output = undefined
           if (this.#lifecycle === lifecycle) this.#lifecycle = undefined
         }
       })
+      amp.acquire()
       output.start()
     } catch (error) {
       lifecycle.fail(error)

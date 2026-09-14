@@ -15,7 +15,8 @@
     "stackchan-sdcard": "./sd-card",
     "stackchan-reset-reason": "./reset-reason",
     "pins/audioout-original": "$(MODULES)/pins/i2s/audioout",
-    "pins/audioout": "../core_s3_audioout"
+    "pins/audioout": "../core_s3_audioout",
+    "stackchan-speaker-amp": "./speaker-amp"
   },
   "platforms": {
     "esp32/m5stackchan_cores3": {

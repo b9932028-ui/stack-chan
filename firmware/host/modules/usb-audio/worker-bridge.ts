@@ -51,6 +51,29 @@ type UsbAudioWorkerOptions = NonNullable<ConstructorParameters<typeof Worker>[1]
 type AudioOutput = InstanceType<typeof AudioOut>
 type AudioInput = InstanceType<typeof AudioIn>
 type PendingCaption = { position: number; text: string }
+
+type SpeakerAmp = { acquire(): void; release(): void }
+
+/**
+ * Keeps the CoreS3 speaker amplifier powered while USB speaker audio plays. The board
+ * setup powers it down when idle (host/platforms/m5stackchan_cores3/speaker-amp.js).
+ */
+function holdSpeakerAmp() {
+  const amp = (globalThis as typeof globalThis & { stackchanSpeakerAmp?: SpeakerAmp }).stackchanSpeakerAmp
+  let held = false
+  return {
+    acquire() {
+      if (held || !amp) return
+      held = true
+      amp.acquire()
+    },
+    release() {
+      if (!held) return
+      held = false
+      amp?.release()
+    },
+  }
+}
 type UsbAudioWorkerMessage = {
   bitsPerSample?: number
   channels?: number
@@ -103,6 +126,7 @@ class UsbAudioWorkerBridge implements UsbAudioBridgeControl {
   #audioStreams = new CurrentStreamGate()
   #audioPumpTimer: ReturnType<typeof Timer.repeat> | undefined
   #audioStarted = false
+  readonly #speakerAmp = holdSpeakerAmp()
   #audioEnded = false
   #audioAwaitingDrain = false
   #audioDrainCallbacksRemaining = 0
@@ -464,6 +488,7 @@ class UsbAudioWorkerBridge implements UsbAudioBridgeControl {
     try {
       this.#audioStarted = true
       Atomics.store(this.#outputStats, SPEAKER_STATS_AUDIO_ACTIVE, 1)
+      this.#speakerAmp.acquire()
       audio.start()
       this.#audioPumpTimer = Timer.repeat(() => this.#drainAudio(), SHARED_PCM_PUMP_MILLISECONDS)
       this.#drainAudio()
@@ -584,6 +609,7 @@ class UsbAudioWorkerBridge implements UsbAudioBridgeControl {
     this.#presentationPower = 0
     this.#notifyPresentation(this.#presentation, 'onPlaybackPower', 0)
     if (streamId) this.#audioStreams.clearIfCurrent(streamId)
+    this.#speakerAmp.release()
     if (!audio) return
     try {
       audio.stop()

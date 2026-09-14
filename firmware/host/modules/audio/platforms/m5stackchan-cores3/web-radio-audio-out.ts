@@ -30,6 +30,29 @@ type AudioOutOptions = {
   sampleRate?: number
 }
 
+type SpeakerAmp = { acquire(): void; release(): void }
+
+/**
+ * Keeps the CoreS3 speaker amplifier powered while the radio plays. The board setup
+ * powers it down when idle (host/platforms/m5stackchan_cores3/speaker-amp.js).
+ */
+function holdSpeakerAmp() {
+  const amp = (globalThis as typeof globalThis & { stackchanSpeakerAmp?: SpeakerAmp }).stackchanSpeakerAmp
+  let held = false
+  return {
+    acquire() {
+      if (held || !amp) return
+      held = true
+      amp.acquire()
+    },
+    release() {
+      if (!held) return
+      held = false
+      amp?.release()
+    },
+  }
+}
+
 /**
  * AudioOut facade dedicated to CoreS3 WebRadio.
  *
@@ -57,6 +80,7 @@ export default class WebRadioAudioOut {
   #writableBytes = 0
   #closed = false
   #started = false
+  readonly #amp = holdSpeakerAmp()
 
   constructor(_options: AudioOutOptions) {
     const Output = AudioOut as unknown as ECMA419AudioOutConstructor
@@ -145,6 +169,7 @@ export default class WebRadioAudioOut {
 
   start(): void {
     this.#started = true
+    this.#amp.acquire()
     this.#audio.start()
     this.#drainWritable()
   }
@@ -152,12 +177,14 @@ export default class WebRadioAudioOut {
   stop(): void {
     this.#started = false
     this.#audio.stop()
+    this.#amp.release()
     this.#writableBytes = 0
   }
 
   close(): void {
     this.#closed = true
     this.#audio.close()
+    this.#amp.release()
     this.#writableBytes = 0
     this.#sharedOutput = undefined
     this.#sharedCompletion = undefined
