@@ -2,7 +2,7 @@ import Resource from 'Resource'
 import AudioIn from 'audio-in'
 import { acquireAudioInput, releaseAudioInput } from 'audio-input-lock'
 
-const AUDIO_INPUT_OWNER = 'Okay Nabu wake word'
+const AUDIO_INPUT_OWNER = 'Hey Copilot wake word'
 
 class NativeMicroWakeWord extends Native('xs_micro_wake_word_destructor') {
   constructor(model) {
@@ -24,7 +24,7 @@ class NativeMicroWakeWord extends Native('xs_micro_wake_word_destructor') {
 }
 
 /**
- * CoreS3-only, always-on local recognition of the stock "Okay Nabu" model.
+ * CoreS3-only, always-on local recognition of the custom-trained "Hey Copilot" model.
  * Speech audio is consumed on-device and is never retained or transmitted.
  */
 export default class MicroWakeWord {
@@ -43,13 +43,13 @@ export default class MicroWakeWord {
     acquireAudioInput(AUDIO_INPUT_OWNER)
     let recognizer
     try {
-      recognizer = new NativeMicroWakeWord(new Resource('okay_nabu.tflite'))
+      recognizer = new NativeMicroWakeWord(new Resource('hey_copilot.tflite'))
       const onDetected = this.#onDetected
       const audioIn = new AudioIn({
         channels: 1,
         onReadable(size) {
           const buffer = this.read(size)
-          if (buffer && recognizer.feed(buffer)) onDetected('Okay Nabu')
+          if (buffer && recognizer.feed(buffer)) onDetected('Hey Copilot')
         },
       })
       audioIn.start()

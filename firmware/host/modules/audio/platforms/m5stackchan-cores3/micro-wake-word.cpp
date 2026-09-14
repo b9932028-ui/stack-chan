@@ -53,7 +53,12 @@
 #define MWW_VARIABLE_ARENA_BYTES (10 * 1024)
 /* The upstream 26,080-byte manifest is low on some TFLM/esp-nn versions. */
 #define MWW_TENSOR_ARENA_BYTES (40 * 1024)
-#define MWW_PROBABILITY_CUTOFF ((uint8_t)247) /* floor(0.97 * 255) */
+/*
+ * floor(0.87 * 255). The stock Okay Nabu manifest uses 0.97, but that is above
+ * every cutoff in the custom Hey Copilot model's streaming ROC; 0.87 is the
+ * highest one it reports, at 0 false accepts/hour and 2.84% FRR on the test set.
+ */
+#define MWW_PROBABILITY_CUTOFF ((uint8_t)221)
 #define MWW_SLIDING_WINDOW_SIZE (5)
 #define MWW_MIN_SLICES_BEFORE_DETECTION (100)
 

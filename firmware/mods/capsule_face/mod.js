@@ -560,7 +560,7 @@ function registerChyModControls(machine) {
               kind: 'toggle',
               command: 'chymod.wake',
               statusKey: 'wakeEnabled',
-              label: 'Enable “Okay Nabu” wake animation',
+              label: 'Enable “Hey Copilot” wake animation',
             },
           ],
         }

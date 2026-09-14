@@ -59,7 +59,7 @@ const animationLabels: Record<string, string> = {
  */
 const toggleLabels: Record<string, string> = {
   randomEnabled: '啟用每3秒亂數播放',
-  wakeEnabled: 'Enable “Okay Nabu” wake animation',
+  wakeEnabled: 'Enable “Hey Copilot” wake animation',
 }
 
 function isDescriptor(value: unknown): value is ChyModDescriptor {

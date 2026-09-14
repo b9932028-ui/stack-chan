@@ -179,7 +179,7 @@
         }
       ],
       "data": {
-        "*": ["./platforms/m5stackchan-cores3/okay_nabu"]
+        "*": ["./platforms/m5stackchan-cores3/hey_copilot"]
       },
       "defines": {
         "audioOut": {
