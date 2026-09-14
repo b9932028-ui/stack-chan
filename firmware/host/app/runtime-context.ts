@@ -312,6 +312,18 @@ export class StackchanRuntimeContext implements StackchanContext {
   }
 
   /**
+   * Spin the yaw axis continuously.
+   * The next setPose returns the axis to position control.
+   *
+   * @param velocity - -1000 to 1000; 0 stops spinning
+   * @returns void when the driver accepts the command
+   * @experimental
+   */
+  async rotateYaw(velocity: number): Promise<void> {
+    return waitForCompletion((callback) => this.#motionController.rotateYaw(velocity, callback))
+  }
+
+  /**
    * Set the color
    * @param{key} - 'primary' or 'secondary'
    * @param{r} - red value [0-255]
@@ -432,6 +444,9 @@ export class StackchanRuntimeContext implements StackchanContext {
       },
       setTorque(torque) {
         return context.setTorque(torque)
+      },
+      rotateYaw(velocity) {
+        return context.rotateYaw(velocity)
       },
     }
   }

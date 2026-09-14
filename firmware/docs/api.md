@@ -110,7 +110,8 @@ It provides face/effect operations, drawer registration, and drawer open/close m
 
 ### Motion capability
 
-The public motion API exposes `pose`, `lookAt`, `lookAway`, `setPose`, and `setTorque`.
+The public motion API exposes `pose`, `lookAt`, `lookAway`, `setPose`, `setTorque`, and `rotateYaw`.
+`rotateYaw(velocity)` spins the yaw axis continuously (-1000 to 1000, 0 stops) on drivers with a wheel-capable yaw servo, currently `m5stackchan`, and rejects elsewhere; the next `setPose` returns the axis to position control.
 Low-level driver objects are internal to `host/modules/motion` and are not exposed to MODs.
 
 ### Audio capability

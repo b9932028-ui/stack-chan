@@ -32,6 +32,12 @@ export type RotationLike = {
 export const SCS_STEPS_PER_01_DEGREE = 16 / 5 / 10
 // Radians to 0.1-degree units: pi radians equals 1800.
 export const RAD_TO_01_DEGREE = 1800 / Math.PI
+// Source firmware rotate velocity range, mapped onto the SCS PWM magnitude.
+export const ROTATE_VELOCITY_LIMIT = 1000
+export const SCS_PWM_MAX = 1023
+export const SCS_PWM_REVERSE_BIT = 1 << 10
+// SCS factory angle limits, used when the limits a servo had before PWM mode are unknown.
+export const SCS_FACTORY_ANGLE_LIMIT = Object.freeze({ min: 0, max: 1023 })
 
 function clamp(value: number, min: number, max: number): number {
   return Math.max(min, Math.min(max, value))
@@ -114,6 +120,17 @@ export function rawPositionToAngle(rawPosition: number, axis: ServoAxisConfig): 
   const clampedRawPosition = clamp(rawPosition, axis.rawPositionLimit.min, axis.rawPositionLimit.max)
   const angle = Math.trunc((clampedRawPosition - axis.zeroPosition) / SCS_STEPS_PER_01_DEGREE)
   return clamp(angle, axis.angleLimit.min, axis.angleLimit.max)
+}
+
+/**
+ * Converts a source-firmware rotate velocity (-1000 to 1000) into the SCS PWM register value.
+ * Matches `map_range(velocity, 0, 1000, 0, 1023)` followed by `SCSCL::WritePWM`, which stores
+ * the magnitude and flags the reverse direction with bit 10.
+ */
+export function velocityToScsPwmRegister(velocity: number): number {
+  const clampedVelocity = clamp(Math.trunc(velocity), -ROTATE_VELOCITY_LIMIT, ROTATE_VELOCITY_LIMIT)
+  const magnitude = Math.trunc((Math.abs(clampedVelocity) * SCS_PWM_MAX) / ROTATE_VELOCITY_LIMIT)
+  return clampedVelocity < 0 ? magnitude | SCS_PWM_REVERSE_BIT : magnitude
 }
 
 export function rotationToM5StackChanServoAngles(rotation: RotationLike): { yaw: number; pitch: number } {

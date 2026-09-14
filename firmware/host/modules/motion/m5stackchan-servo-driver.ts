@@ -5,6 +5,8 @@ import {
   RAD_TO_01_DEGREE,
   rawPositionToAngle,
   rotationToM5StackChanServoAngles,
+  SCS_FACTORY_ANGLE_LIMIT,
+  velocityToScsPwmRegister,
 } from 'm5stackchan-servo'
 import {
   type MotionCompletion,
@@ -34,6 +36,8 @@ type M5StackChanServoDriverProps = Partial<{
   }
 }>
 
+type AngleLimits = { min: number; max: number }
+
 export class M5StackChanServoDriver {
   #pan: SCServo
   #tilt: SCServo
@@ -41,6 +45,8 @@ export class M5StackChanServoDriver {
   #rotation: Rotation = { y: 0, p: 0, r: 0 }
   #rotationResult: Maybe<Rotation> = { success: true, value: this.#rotation }
   #rotationErrorResult: { success: false; reason?: string } = { success: false }
+  // Angle limits the pan servo had before entering PWM mode; null while in position mode.
+  #panPositionLimits: AngleLimits | null = null
   #servoPower?: {
     setEnabled: (enabled: boolean) => void
   }
@@ -71,6 +77,7 @@ export class M5StackChanServoDriver {
 
   onAttached() {
     this.#servoPower?.setEnabled(true)
+    this.#recoverPanFromPwmMode()
   }
 
   onDetached() {
@@ -88,6 +95,69 @@ export class M5StackChanServoDriver {
   }
 
   applyRotation(ori: Rotation, time: MotionDurationSeconds = 0.5, callback?: MotionCompletion): void {
+    this.#leavePanPwmMode((modeError) => {
+      if (modeError != null) {
+        callback?.(modeError)
+        return
+      }
+      this.#applyPositions(ori, time, callback)
+    })
+  }
+
+  /**
+   * Spins the yaw servo continuously, as the source firmware's `Servo::rotate` does.
+   * The SCS servo runs as a wheel while both angle limits are 0. The limits it had are
+   * kept here and written back before the next position move.
+   *
+   * @param velocity - -1000 to 1000; 0 stops the servo but stays in PWM mode
+   */
+  rotateYaw(velocity: number, callback?: MotionCompletion): void {
+    const register = velocityToScsPwmRegister(velocity)
+    if (this.#panPositionLimits != null) {
+      this.#pan.setRawPwm(register, callback)
+      return
+    }
+    this.#pan.readAngleLimits((limits) => {
+      if (limits.success === false) {
+        callback?.(new Error(limits.reason ?? 'failed to read yaw angle limits'))
+        return
+      }
+      // Limits already at 0 mean PWM mode was left on by an earlier session; restore factory limits later.
+      const wheelAlready = limits.value.min === 0 && limits.value.max === 0
+      const positionLimits = wheelAlready ? SCS_FACTORY_ANGLE_LIMIT : limits.value
+      this.#pan.writeAngleLimits(0, 0, (modeError) => {
+        if (modeError != null) {
+          callback?.(modeError)
+          return
+        }
+        this.#panPositionLimits = { min: positionLimits.min, max: positionLimits.max }
+        this.#pan.setRawPwm(register, callback)
+      })
+    })
+  }
+
+  getRotation(callback: MotionResultCallback<Maybe<Rotation>>): void {
+    this.#pan.readRawPosition((panStatus) => {
+      if (panStatus.success === false) {
+        this.#returnRotationError(callback, panStatus.reason)
+        return
+      }
+      this.#tilt.readRawPosition((tiltStatus) => {
+        if (tiltStatus.success === false) {
+          this.#returnRotationError(callback, tiltStatus.reason)
+          return
+        }
+        const yawAngle = rawPositionToAngle(panStatus.value.position, this.#config.yaw)
+        const pitchAngle = rawPositionToAngle(tiltStatus.value.position, this.#config.pitch)
+        this.#rotation.y = yawAngle / RAD_TO_01_DEGREE
+        this.#rotation.p = -(pitchAngle / RAD_TO_01_DEGREE)
+        this.#rotation.r = 0.0
+        callback(this.#rotationResult)
+      })
+    })
+  }
+
+  #applyPositions(ori: Rotation, time: MotionDurationSeconds, callback?: MotionCompletion): void {
     const angles = rotationToM5StackChanServoAngles(ori)
     const panRawPosition = angleToRawPosition(angles.yaw, this.#config.yaw)
     const tiltRawPosition = angleToRawPosition(angles.pitch, this.#config.pitch)
@@ -111,23 +181,37 @@ export class M5StackChanServoDriver {
     }
   }
 
-  getRotation(callback: MotionResultCallback<Maybe<Rotation>>): void {
-    this.#pan.readRawPosition((panStatus) => {
-      if (panStatus.success === false) {
-        this.#returnRotationError(callback, panStatus.reason)
+  #leavePanPwmMode(next: MotionCompletion): void {
+    const limits = this.#panPositionLimits
+    if (limits == null) {
+      next()
+      return
+    }
+    this.#pan.setRawPwm(0, (stopError) => {
+      if (stopError != null) {
+        next(stopError)
         return
       }
-      this.#tilt.readRawPosition((tiltStatus) => {
-        if (tiltStatus.success === false) {
-          this.#returnRotationError(callback, tiltStatus.reason)
-          return
-        }
-        const yawAngle = rawPositionToAngle(panStatus.value.position, this.#config.yaw)
-        const pitchAngle = rawPositionToAngle(tiltStatus.value.position, this.#config.pitch)
-        this.#rotation.y = yawAngle / RAD_TO_01_DEGREE
-        this.#rotation.p = -(pitchAngle / RAD_TO_01_DEGREE)
-        this.#rotation.r = 0.0
-        callback(this.#rotationResult)
+      this.#pan.writeAngleLimits(limits.min, limits.max, (modeError) => {
+        if (modeError == null) this.#panPositionLimits = null
+        next(modeError)
+      })
+    })
+  }
+
+  /**
+   * A reset while spinning leaves the pan servo powered in PWM mode, where it keeps
+   * turning and ignores position commands. A servo that was just powered on has
+   * already reverted, and simply does not answer yet, which is harmless here.
+   */
+  #recoverPanFromPwmMode(): void {
+    this.#pan.readAngleLimits((limits) => {
+      if (limits.success === false || limits.value.min !== 0 || limits.value.max !== 0) return
+      trace('[m5stackchan-servo] pan servo was left in PWM mode; restoring position mode\n')
+      this.#pan.setRawPwm(0, () => {
+        this.#pan.writeAngleLimits(SCS_FACTORY_ANGLE_LIMIT.min, SCS_FACTORY_ANGLE_LIMIT.max, (error) => {
+          if (error != null) trace(`[m5stackchan-servo] pan position mode restore failed: ${String(error)}\n`)
+        })
       })
     })
   }

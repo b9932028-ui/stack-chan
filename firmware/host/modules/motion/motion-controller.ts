@@ -22,6 +22,8 @@ export type MotionDriver = {
   applyRotation: (ori: RotationType, time?: MotionDurationSeconds, callback?: MotionCompletion) => void
   getRotation: (callback: MotionResultCallback<Maybe<RotationType>>) => void
   setTorque: (torque: boolean, callback?: MotionCompletion) => void
+  /** Spins the yaw axis continuously (-1000 to 1000). Drivers without a wheel-capable yaw servo omit it. */
+  rotateYaw?: (velocity: number, callback?: MotionCompletion) => void
   onAttached?: () => void
   onDetached?: () => void
 }
@@ -161,6 +163,15 @@ export class MotionController {
 
   setTorque(torque: boolean, callback?: MotionCompletion): void {
     this.#driver.setTorque(torque, callback)
+  }
+
+  rotateYaw(velocity: number, callback?: MotionCompletion): void {
+    const driver = this.#driver
+    if (driver.rotateYaw == null) {
+      callback?.(new Error('continuous yaw rotation is not supported by the motion driver'))
+      return
+    }
+    driver.rotateYaw(velocity, callback)
   }
 
   updatePose(_id?: unknown): void {

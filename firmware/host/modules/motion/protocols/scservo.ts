@@ -47,6 +47,8 @@ type Command = (typeof COMMAND)[keyof typeof COMMAND]
 
 const ADDRESS = {
   ID: 5,
+  MIN_ANGLE_LIMIT: 9,
+  MAX_ANGLE_LIMIT: 11,
   OFFSET: 31,
   TORQUE_ENABLE: 40,
   GOAL_ACC: 41,
@@ -584,6 +586,57 @@ class SCServo {
       (error) => callback(failureFromError(error)),
       2,
     )
+  }
+
+  /**
+   * reads the angle limits in raw position units
+   * @note both limits at 0 means the servo is in PWM (wheel) mode
+   */
+  readAngleLimits(callback: ResultCallback<{ min: number; max: number }>): void {
+    this.#sendCommand(
+      COMMAND.READ,
+      ADDRESS.MIN_ANGLE_LIMIT,
+      (values) => {
+        if (values == null || values.length < 4) {
+          callback({
+            success: false,
+            reason: 'response corrupted',
+          })
+          return
+        }
+        callback({
+          success: true,
+          value: { min: el(values[0], values[1]), max: el(values[2], values[3]) },
+        })
+      },
+      (error) => callback(failureFromError(error)),
+      4,
+    )
+  }
+
+  /**
+   * writes the angle limits in raw position units
+   * @note writing 0 to both switches the servo into PWM (wheel) mode; with the
+   *  EEPROM lock left on, the change lasts until the servo loses power
+   */
+  writeAngleLimits(min: number, max: number, callback?: CompletionCallback): void {
+    this.#sendCommand(
+      COMMAND.WRITE,
+      ADDRESS.MIN_ANGLE_LIMIT,
+      () => callback?.(),
+      callback ?? (() => {}),
+      ...le(clamp(min, 0, 0x03ff)),
+      ...le(clamp(max, 0, 0x03ff)),
+    )
+  }
+
+  /**
+   * sets the PWM output while in PWM (wheel) mode
+   * @param register magnitude 0-1023 with bit 10 set for the reverse direction
+   */
+  setRawPwm(register: number, callback?: CompletionCallback): void {
+    const value = Math.floor(clamp(register, 0, 0x07ff))
+    this.#sendCommand(COMMAND.WRITE, ADDRESS.GOAL_TIME, () => callback?.(), callback ?? (() => {}), ...le(value))
   }
 
   /**

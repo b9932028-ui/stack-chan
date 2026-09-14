@@ -109,6 +109,8 @@ export type MotionCapability = {
   lookAway(): void
   setPose(pose: Pose, time?: MotionDurationSeconds): Promise<void>
   setTorque(torque: boolean): Promise<void>
+  /** Spin the yaw axis continuously (-1000 to 1000, 0 stops). Rejects when the driver cannot. */
+  rotateYaw(velocity: number): Promise<void>
 }
 
 export type AudioCapability = {

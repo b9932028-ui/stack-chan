@@ -47,6 +47,15 @@ class FakeMotionDriver implements MotionDriver {
   }
 }
 
+class WheelMotionDriver extends FakeMotionDriver {
+  yawVelocities: number[] = []
+
+  rotateYaw(velocity: number, callback?: MotionCompletion): void {
+    this.yawVelocities.push(velocity)
+    callback?.()
+  }
+}
+
 async function runTest() {
   trace('=== motion controller test ===\n')
 
@@ -136,6 +145,17 @@ async function runTest() {
   equal(nextDriver.appliedRotation?.y, 0.2, 'setPose should delegate yaw to the active driver')
   equal(nextDriver.appliedRotation?.p, -0.1, 'setPose should delegate pitch to the active driver')
   equal(nextDriver.appliedTime, 0.25, 'setPose should pass motion time to the active driver')
+
+  let unsupportedRotateError: unknown
+  controller.rotateYaw(300, (error) => {
+    unsupportedRotateError = error
+  })
+  assert(unsupportedRotateError instanceof Error, 'rotateYaw should reject drivers without continuous yaw rotation')
+
+  const wheelDriver = new WheelMotionDriver()
+  controller.useDriver(wheelDriver)
+  await waitForCompletion((callback) => controller.rotateYaw(-400, callback))
+  equal(wheelDriver.yawVelocities[0], -400, 'rotateYaw should delegate velocity to the active driver')
 
   trace('ok\n')
 }

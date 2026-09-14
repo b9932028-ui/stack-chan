@@ -9,6 +9,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/com
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
 import { ModDeployCard } from '@/features/chymod/mod-deploy-card'
+import { MotionControl, type MotionControlDescriptor, type MotionStatus } from '@/features/chymod/motion-control'
 import { useUSBControl } from '@/features/chymod/use-usb-control'
 
 type ActionControl = {
@@ -28,7 +29,7 @@ type ToggleControl = {
 
 type ChyModDescriptor = {
   version: number
-  controls: Array<ActionControl | ToggleControl>
+  controls: Array<ActionControl | ToggleControl | MotionControlDescriptor>
 }
 
 type ChyModStatus = {
@@ -42,6 +43,7 @@ type ChyModStatus = {
   wakeError?: string | null
   wakeHitCount?: number
   lastWakePhrase?: string | null
+  motion?: MotionStatus
 }
 
 const animationLabels: Record<string, string> = {
@@ -77,6 +79,9 @@ export function ChyModPage() {
   const [status, setStatus] = useState<ChyModStatus | null>(null)
   const [commandError, setCommandError] = useState<string | null>(null)
   const [busyControl, setBusyControl] = useState<string | null>(null)
+  const motionControl = descriptor?.controls.find(
+    (control): control is MotionControlDescriptor => control.kind === 'motion'
+  )
 
   const refreshStatus = useCallback(async () => {
     if (!usb.capabilities.has('chymod.status')) return
@@ -219,6 +224,7 @@ export function ChyModPage() {
             )}
 
             {descriptor?.controls.map((control) => {
+              if (control.kind === 'motion') return null
               if (control.kind === 'actions') {
                 return (
                   <section key={control.id} className="grid gap-3">
@@ -263,6 +269,15 @@ export function ChyModPage() {
             })}
           </CardContent>
         </Card>
+        {motionControl && (
+          <MotionControl
+            control={motionControl}
+            status={status?.motion}
+            connected={usb.connected}
+            request={usb.request}
+            onError={setCommandError}
+          />
+        )}
       </main>
     </div>
   )

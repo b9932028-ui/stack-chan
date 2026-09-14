@@ -6,6 +6,7 @@ import {
   createM5StackChanServoConfig,
   rawPositionToAngle,
   rotationToM5StackChanServoAngles,
+  velocityToScsPwmRegister,
 } from '../m5stackchan-servo.js'
 
 describe('M5StackChan servo mapping', () => {
@@ -67,5 +68,21 @@ describe('M5StackChan servo mapping', () => {
 
     assert.equal(angles.pitch, 900)
     assert.equal(angleToRawPosition(angles.pitch, pitch), 908)
+  })
+
+  test('maps rotate velocity onto the SCS PWM magnitude like the source firmware', () => {
+    assert.equal(velocityToScsPwmRegister(0), 0)
+    assert.equal(velocityToScsPwmRegister(1000), 1023)
+    assert.equal(velocityToScsPwmRegister(500), 511)
+  })
+
+  test('flags reverse rotation with SCS PWM bit 10', () => {
+    assert.equal(velocityToScsPwmRegister(-500), 511 | (1 << 10))
+    assert.equal(velocityToScsPwmRegister(-1000), 1023 | (1 << 10))
+  })
+
+  test('clamps rotate velocity to the source firmware range', () => {
+    assert.equal(velocityToScsPwmRegister(5000), 1023)
+    assert.equal(velocityToScsPwmRegister(-5000), 1023 | (1 << 10))
   })
 })

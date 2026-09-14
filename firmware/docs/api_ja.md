@@ -116,7 +116,8 @@ wasm audio bridge は、現在の public capability 実装で唯一、非同期 
 
 ### Motion capability
 
-公開 motion API は、`pose`、`lookAt`、`lookAway`、`setPose`、`setTorque` を提供します。
+公開 motion API は、`pose`、`lookAt`、`lookAway`、`setPose`、`setTorque`、`rotateYaw` を提供します。
+`rotateYaw(velocity)` は、ホイールモード対応のヨー軸サーボを持つドライバー（現在は `m5stackchan`）でヨー軸を連続回転させます（-1000〜1000、0 で停止）。それ以外のドライバーでは reject します。次の `setPose` でヨー軸は位置制御に戻ります。
 低レイヤの driver object は `host/modules/motion` の内部実装であり、MOD には公開しません。
 
 ### Audio capability

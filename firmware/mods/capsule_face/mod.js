@@ -7,6 +7,7 @@ import MicroWakeWord from 'micro-wake-word'
 import { getFillSkin } from 'parts/shape-utils'
 import Preference from 'preference'
 import { defineShapeTemplate } from 'template'
+import Timer from 'timer'
 import { registerUSBControlNamespace } from 'usb-control-registry'
 
 const ANIMATION_NAMES = ['idle', 'blink', 'lookAround', 'happy', 'angry', 'working']
@@ -19,6 +20,17 @@ const WORK_DURATION_MS = 15000
 const WORK_TRANSITION_MS = 500
 const WORK_LINE_MS = 2400
 const WORK_BLINK_START_MS = 2050
+
+// Motion panel ported from the M5Stack StackChan app. Angles are in 0.1 degrees,
+// the same unit and ranges as the app and its servo configuration.
+const MOTION_YAW_ANGLE_LIMIT = Object.freeze({ min: -1280, max: 1280 })
+const MOTION_PITCH_ANGLE_LIMIT = Object.freeze({ min: 0, max: 900 })
+const MOTION_SPEED_LIMIT = Object.freeze({ min: 0, max: 1000 })
+const MOTION_ROTATE_LIMIT = Object.freeze({ min: -1000, max: 1000 })
+const MOTION_DEFAULT_SPEED = 500
+// The app firmware releases torque once a servo is at rest, checking every 200 ms.
+const MOTION_TORQUE_RELEASE_MS = 200
+const DECIDEGREES_PER_RADIAN = 1800 / Math.PI
 
 const LOOK_X_OFFSET_PX = 27
 const SINGLE_BLINK_DURATION_MS = 300
@@ -535,47 +547,263 @@ function createAnimationMotion(machine) {
   return (tickMillis, face) => machine.tick(tickMillis, face)
 }
 
-function registerChyModControls(machine) {
-  registerUSBControlNamespace('chymod', ['describe', 'play', 'status', 'random', 'wake'], (command, value) => {
-    switch (command) {
-      case 'describe':
-        return {
-          version: 1,
-          controls: [
-            {
-              id: 'animation',
-              kind: 'actions',
-              command: 'chymod.play',
-              options: ANIMATION_NAMES,
-            },
-            {
-              id: 'randomEnabled',
-              kind: 'toggle',
-              command: 'chymod.random',
-              statusKey: 'randomEnabled',
-              label: 'Enable random animation every 3 seconds',
-            },
-            {
-              id: 'wakeEnabled',
-              kind: 'toggle',
-              command: 'chymod.wake',
-              statusKey: 'wakeEnabled',
-              label: 'Enable “Hey Copilot” wake animation',
-            },
-          ],
-        }
-      case 'play':
-        return machine.play(value)
-      case 'status':
-        return machine.status()
-      case 'random':
-        return machine.setRandom(value)
-      case 'wake':
-        return machine.setWake(value)
-      default:
-        throw new Error('unsupported ChyMOD command')
-    }
+/**
+ * The app drives each servo with a critically damped spring whose stiffness is
+ * 10 + (speed / 1000)^2 * 640. Such a spring settles in about 5.83 / sqrt(stiffness)
+ * seconds whatever the distance, which is the goal time our servos understand.
+ */
+function motionSpeedToSeconds(speed) {
+  const normalized = speed / 1000
+  return 5.83 / Math.sqrt(10 + normalized * normalized * 640)
+}
+
+function readMotionInteger(value, limit, name) {
+  if (value === undefined) return undefined
+  if (!Number.isInteger(value)) throw new Error(`${name} must be an integer`)
+  return Math.max(limit.min, Math.min(limit.max, value))
+}
+
+function readMotionServo(value, name) {
+  if (value === undefined) return undefined
+  if (value === null || typeof value !== 'object') throw new Error(`${name} must be an object`)
+  return value
+}
+
+/**
+ * Accepts the app's `controlMotion` JSON:
+ * `{ yawServo: { angle | rotate, speed }, pitchServo: { angle, speed } }`.
+ * Joystick drags arrive faster than the servo bus can take them, so commands are
+ * coalesced: only the latest target is sent once the previous move is accepted.
+ */
+function createMotionControl(motion) {
+  const rotateSupported = typeof motion.rotateYaw === 'function'
+  const yaw = { mode: 'angle', angle: 0, speed: MOTION_DEFAULT_SPEED, rotate: 0 }
+  const pitch = { angle: 0, speed: MOTION_DEFAULT_SPEED }
+  let torque = false
+  let running = false
+  let error = null
+  let pendingPose = false
+  let pendingRotate = false
+  let pendingSeconds = 0
+  let pendingRelease = false
+  let releaseTimer
+  let retried = false
+  let timeouts = 0
+
+  const status = () => ({
+    yaw: { ...yaw },
+    pitch: { ...pitch },
+    torque,
+    moving: running,
+    rotateSupported,
+    error,
+    timeouts,
   })
+
+  // The app firmware never waits for servo replies, so a lost or late reply goes unnoticed
+  // there. Do the same: a servo timeout is counted, not reported, since the next command
+  // overwrites the target anyway. The driver writes pan before tilt and stops at the first
+  // failure, so the move is retried once to make sure the last position of a drag lands.
+  const isServoTimeout = (cause) => String(cause).includes('timed out')
+
+  const clearReleaseTimer = () => {
+    if (releaseTimer === undefined) return
+    Timer.clear(releaseTimer)
+    releaseTimer = undefined
+  }
+
+  // The pan and tilt servos share one half-duplex bus, but each SCServo queues only
+  // its own commands. Every bus write therefore goes through drain(), one at a time:
+  // a torque release sent beside a new move collides on the wire and times out.
+  const scheduleTorqueRelease = (seconds) => {
+    clearReleaseTimer()
+    releaseTimer = Timer.set(
+      () => {
+        releaseTimer = undefined
+        pendingRelease = true
+        if (!running) void drain()
+      },
+      Math.round(seconds * 1000) + MOTION_TORQUE_RELEASE_MS,
+    )
+  }
+
+  const drain = async () => {
+    running = true
+    try {
+      while (pendingPose || pendingRotate || pendingRelease) {
+        if (!pendingPose && !pendingRotate) {
+          pendingRelease = false
+          if (torque) {
+            try {
+              await motion.setTorque(false)
+            } catch (cause) {
+              if (!isServoTimeout(cause)) throw cause
+              timeouts += 1
+            }
+            torque = false
+          }
+          continue
+        }
+
+        const pose = pendingPose
+        // A pose moves both axes and takes yaw out of PWM mode, so a spinning yaw is restarted after it.
+        const rotate = pendingRotate || (pose && yaw.mode === 'rotate')
+        const seconds = pendingSeconds
+        pendingPose = false
+        pendingRotate = false
+        pendingRelease = false
+        pendingSeconds = 0
+        clearReleaseTimer()
+        try {
+          if (!torque) {
+            await motion.setTorque(true)
+            torque = true
+          }
+          motion.lookAway()
+          if (pose) {
+            await motion.setPose(
+              {
+                position: { x: 0, y: 0, z: 0 },
+                rotation: { y: yaw.angle / DECIDEGREES_PER_RADIAN, p: -pitch.angle / DECIDEGREES_PER_RADIAN, r: 0 },
+              },
+              seconds,
+            )
+          }
+          if (rotate) await motion.rotateYaw(yaw.rotate)
+          retried = false
+        } catch (cause) {
+          if (!isServoTimeout(cause)) throw cause
+          timeouts += 1
+          // The lost write may have been the torque enable, so enable it again with the retry.
+          torque = false
+          if (!retried) {
+            retried = true
+            // yaw and pitch still hold the latest target; a newer command merges into this retry.
+            pendingPose = pendingPose || pose
+            pendingRotate = pendingRotate || rotate
+            pendingSeconds = Math.max(pendingSeconds, seconds)
+            continue
+          }
+          retried = false
+        }
+        error = null
+        if (yaw.mode !== 'rotate' || yaw.rotate === 0) scheduleTorqueRelease(pose ? seconds : 0)
+      }
+    } catch (cause) {
+      error = String(cause)
+      // A failed command leaves the torque state unknown; re-enable it before the next move.
+      torque = false
+    } finally {
+      running = false
+    }
+  }
+
+  const request = (value) => {
+    if (value === null || typeof value !== 'object') throw new Error('motion must be an object')
+    const yawServo = readMotionServo(value.yawServo, 'yawServo')
+    const pitchServo = readMotionServo(value.pitchServo, 'pitchServo')
+    // Validate the whole command before changing any state.
+    const yawRotate = readMotionInteger(yawServo?.rotate, MOTION_ROTATE_LIMIT, 'yawServo.rotate')
+    const yawAngle = readMotionInteger(yawServo?.angle, MOTION_YAW_ANGLE_LIMIT, 'yawServo.angle')
+    const yawSpeed = readMotionInteger(yawServo?.speed, MOTION_SPEED_LIMIT, 'yawServo.speed')
+    const pitchAngle = readMotionInteger(pitchServo?.angle, MOTION_PITCH_ANGLE_LIMIT, 'pitchServo.angle')
+    const pitchSpeed = readMotionInteger(pitchServo?.speed, MOTION_SPEED_LIMIT, 'pitchServo.speed')
+    if (yawRotate !== undefined && !rotateSupported) {
+      throw new Error('this firmware does not support continuous yaw rotation')
+    }
+
+    // Same precedence as the app firmware's update_servo: rotate first, then angle.
+    // A missing speed falls back to the default spring, which matches speed 500.
+    if (yawRotate !== undefined) {
+      yaw.mode = 'rotate'
+      yaw.rotate = yawRotate
+      if (yawSpeed !== undefined) yaw.speed = yawSpeed
+      pendingRotate = true
+    } else if (yawAngle !== undefined) {
+      yaw.mode = 'angle'
+      yaw.angle = yawAngle
+      yaw.rotate = 0
+      yaw.speed = yawSpeed ?? MOTION_DEFAULT_SPEED
+      pendingPose = true
+      pendingSeconds = Math.max(pendingSeconds, motionSpeedToSeconds(yaw.speed))
+    }
+    // The app's pitch servo cannot spin, so a pitch rotate is ignored like Servo::rotate does.
+    if (pitchAngle !== undefined) {
+      pitch.angle = pitchAngle
+      pitch.speed = pitchSpeed ?? MOTION_DEFAULT_SPEED
+      pendingPose = true
+      pendingSeconds = Math.max(pendingSeconds, motionSpeedToSeconds(pitch.speed))
+    }
+    if (!running && (pendingPose || pendingRotate)) void drain()
+    return status()
+  }
+
+  const descriptor = () => ({
+    id: 'motion',
+    kind: 'motion',
+    command: 'chymod.motion',
+    yaw: {
+      angle: MOTION_YAW_ANGLE_LIMIT,
+      speed: MOTION_SPEED_LIMIT,
+      rotate: rotateSupported ? MOTION_ROTATE_LIMIT : null,
+    },
+    pitch: { angle: MOTION_PITCH_ANGLE_LIMIT, speed: MOTION_SPEED_LIMIT },
+    defaultSpeed: MOTION_DEFAULT_SPEED,
+  })
+
+  return { descriptor, request, status }
+}
+
+function registerChyModControls(machine, motionControl) {
+  const withMotion = (result) => ({ ...result, motion: motionControl.status() })
+  registerUSBControlNamespace(
+    'chymod',
+    ['describe', 'play', 'status', 'random', 'wake', 'motion'],
+    (command, value) => {
+      switch (command) {
+        case 'describe':
+          return {
+            version: 1,
+            controls: [
+              {
+                id: 'animation',
+                kind: 'actions',
+                command: 'chymod.play',
+                options: ANIMATION_NAMES,
+              },
+              {
+                id: 'randomEnabled',
+                kind: 'toggle',
+                command: 'chymod.random',
+                statusKey: 'randomEnabled',
+                label: 'Enable random animation every 3 seconds',
+              },
+              {
+                id: 'wakeEnabled',
+                kind: 'toggle',
+                command: 'chymod.wake',
+                statusKey: 'wakeEnabled',
+                label: 'Enable “Hey Copilot” wake animation',
+              },
+              motionControl.descriptor(),
+            ],
+          }
+        case 'play':
+          return withMotion(machine.play(value))
+        case 'status':
+          return withMotion(machine.status())
+        case 'random':
+          return withMotion(machine.setRandom(value))
+        case 'wake':
+          return withMotion(machine.setWake(value))
+        case 'motion':
+          motionControl.request(value)
+          return withMotion(machine.status())
+        default:
+          throw new Error('unsupported ChyMOD command')
+      }
+    },
+  )
 }
 
 const CapsuleFace = FaceBase.template(($ = {}) => ({
@@ -594,7 +822,7 @@ const CapsuleFace = FaceBase.template(($ = {}) => ({
 
 export function onContextCreated(robot, option) {
   const machine = createAnimationStateMachine()
-  registerChyModControls(machine)
+  registerChyModControls(machine, createMotionControl(robot.motion))
   // A MOD hook replaces the host hook, so preserve the host's USB controls and
   // other standard runtime services before installing the custom face.
   initializeDefaultContext(robot, option)
