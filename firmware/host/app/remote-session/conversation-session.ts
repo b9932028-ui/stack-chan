@@ -58,6 +58,7 @@ export function createConversationSession(
   let lastError: string | undefined
   let transportState = transport.transportState
   let pending: PendingRequest | undefined
+  let activeRequestId: string | undefined
   let closed = false
   const listeners = new Set<(state: RemoteConversationState, error?: string) => void>()
   const transportListeners = new Set<(state: RemoteConversationTransportState) => void>()
@@ -86,6 +87,7 @@ export function createConversationSession(
   const failPending = (request: PendingRequest, error: string) => {
     if (pending !== request) return
     clearPending()
+    activeRequestId = undefined
     updateState('blocked', error)
   }
 
@@ -142,6 +144,7 @@ export function createConversationSession(
     if (closed) throw new Error('USB conversation session is closed')
     if (pending?.operation === operation) return pending.requestId
     clearPending()
+    activeRequestId = undefined
     const next: PendingRequest = {
       operation,
       requestId: createRequestId(),
@@ -211,11 +214,25 @@ export function createConversationSession(
     remoteSession,
     handleEvent(event) {
       if (event.type !== 'conversation.result') return false
-      if (event.requestId !== pending?.requestId) return true
-      clearPending()
-      if (event.success) updateState(event.state, event.error)
-      else {
-        updateState('blocked', event.error ?? `conversation request failed in state ${event.state}`)
+      const request = pending
+      if (event.requestId === request?.requestId) {
+        clearPending()
+        if (event.success) {
+          activeRequestId = request.operation === 'start' && event.state !== 'standby' ? event.requestId : undefined
+          updateState(event.state, event.error)
+        } else {
+          activeRequestId = undefined
+          updateState('blocked', event.error ?? `conversation request failed in state ${event.state}`)
+        }
+        return true
+      }
+      if (event.requestId !== activeRequestId) return true
+      if (!event.success || event.state === 'blocked') {
+        activeRequestId = undefined
+        updateState('blocked', event.error ?? 'remote conversation failed')
+      } else {
+        if (event.state === 'standby') activeRequestId = undefined
+        updateState(event.state, event.error)
       }
       return true
     },
@@ -226,6 +243,7 @@ export function createConversationSession(
       unsubscribeTransport()
       state = 'standby'
       lastError = undefined
+      activeRequestId = undefined
       transportState = 'disconnected'
       closed = true
       listeners.clear()

@@ -6,6 +6,8 @@ import { dirname, join } from 'node:path'
 import { fileURLToPath, URL } from 'node:url'
 import { defineConfig } from 'vite'
 
+import { chymodVoiceBackend } from './server/chymod-voice-backend'
+
 const page = (path: string) => fileURLToPath(new URL(path, import.meta.url))
 
 const wasmBuildId = () => {
@@ -43,7 +45,7 @@ export default defineConfig({
   define: {
     'import.meta.env.VITE_WASM_BUILD_ID': JSON.stringify(wasmBuildId()),
   },
-  plugins: [react(), tailwindcss(), copyRuntimeAssets()],
+  plugins: [react(), tailwindcss(), chymodVoiceBackend(), copyRuntimeAssets()],
   resolve: {
     alias: {
       '@/editor': fileURLToPath(new URL('./editor', import.meta.url)),

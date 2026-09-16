@@ -10,6 +10,7 @@ import {
   createRemoteConversationSessionFacade,
   type RemoteConversationSessionBinding,
 } from 'stackchan-remote-session-facade'
+import { getUSBControlExtensionCapabilities, runUSBControlExtension } from 'usb-control-registry'
 
 export type UsbAudioPresentationControl = {
   onStatusChanged(status: number): void
@@ -60,6 +61,7 @@ export type UsbAudioRemoteActivation = {
 
 export type UsbAudioRemoteRuntime = {
   activate(context: StackchanContext, provider: RealtimeToolProvider): UsbAudioRemoteActivation
+  addRawEventHandler(handler: (event: Record<string, unknown>) => boolean | Promise<boolean>): () => void
   subscribeTaskState(listener: (state: TaskExecutionState) => void): () => void
   close(): void
 }
@@ -115,6 +117,29 @@ export function createUsbAudioDockRuntime<Status>(
   let context: StackchanContext | undefined
   let contextAttached = false
   let closed = false
+  const removeControlEventHandler = remoteRuntime.addRawEventHandler(async (event) => {
+    if (event.type === 'session.created') {
+      await bridge.sendEvent(
+        JSON.stringify({ type: 'control.ready', capabilities: getUSBControlExtensionCapabilities() }),
+      )
+      return false
+    }
+    if (event.type !== 'control.command') return false
+    const requestId = event.requestId
+    const command = event.command
+    if (!Number.isInteger(requestId) || typeof command !== 'string') return true
+    try {
+      if (!getUSBControlExtensionCapabilities().includes(command)) {
+        throw new Error(`unsupported command: ${command}`)
+      }
+      const result = await runUSBControlExtension(command, event.value)
+      await bridge.sendEvent(JSON.stringify({ type: 'control.result', requestId, ok: true, result }))
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error)
+      await bridge.sendEvent(JSON.stringify({ type: 'control.result', requestId, ok: false, error: message }))
+    }
+    return true
+  })
   const facade = createRemoteConversationSessionFacade(createActiveBinding)
 
   function createActiveBinding(): RemoteConversationSessionBinding {
@@ -180,9 +205,14 @@ export function createUsbAudioDockRuntime<Status>(
       context = undefined
       let firstError: unknown
       try {
+        removeControlEventHandler()
+      } catch (error) {
+        firstError ??= error
+      }
+      try {
         facade.close()
       } catch (error) {
-        firstError = error
+        firstError ??= error
       }
       try {
         remoteRuntime.close()

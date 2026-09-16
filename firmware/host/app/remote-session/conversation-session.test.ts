@@ -117,6 +117,34 @@ test('conversation start retries the same request ID and accepts its result', ()
   assert.deepEqual(states, ['connecting', 'listening'])
 })
 
+test('an acknowledged start accepts lifecycle updates until it returns to standby', () => {
+  const { session } = createHarness()
+  const states: string[] = []
+  session.remoteSession.subscribe((state) => states.push(state))
+  const requestId = session.remoteSession.requestStart()
+
+  for (const state of ['listening', 'recognizing', 'speaking', 'standby'] as const) {
+    session.handleEvent({
+      schema: 'stackchan.event.v1',
+      type: 'conversation.result',
+      requestId,
+      success: true,
+      state,
+    })
+  }
+
+  session.handleEvent({
+    schema: 'stackchan.event.v1',
+    type: 'conversation.result',
+    requestId,
+    success: true,
+    state: 'listening',
+  })
+
+  assert.deepEqual(states, ['connecting', 'listening', 'recognizing', 'speaking', 'standby'])
+  assert.equal(session.remoteSession.state, 'standby')
+})
+
 test('conversation stop supersedes start and ignores the stale result', () => {
   const { events, session } = createHarness()
   const startId = session.remoteSession.requestStart()

@@ -3,11 +3,31 @@ import { describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/app/i18n-provider'
 import { ChyModPage } from '@/features/chymod/chymod-page'
-import { useUSBControl } from '@/features/chymod/use-usb-control'
+import { useCodexVoice } from '@/features/chymod/use-codex-voice'
 
-vi.mock('@/features/chymod/use-usb-control', () => ({
-  useUSBControl: vi.fn(),
+vi.mock('@/features/chymod/use-codex-voice', () => ({
+  useCodexVoice: vi.fn(),
 }))
+
+const voiceMock = (requestControl: (command: string, value?: unknown) => Promise<unknown>, capabilities: string[]) => ({
+  connection: 'ready' as const,
+  phase: 'idle' as const,
+  controlCapabilities: new Set(capabilities),
+  featureEnabled: true,
+  commandsEnabled: true,
+  recordingUrl: null,
+  recordingStats: null,
+  transcript: '',
+  answer: '',
+  error: null,
+  connect: vi.fn(async () => {}),
+  disconnect: vi.fn(async () => {}),
+  stopRecording: vi.fn(),
+  requestControl,
+  setFeatureEnabled: vi.fn(),
+  setCommandsEnabled: vi.fn(),
+  clear: vi.fn(),
+})
 
 describe('ChyModPage', () => {
   it('renders controls described by the MOD and sends namespaced commands', async () => {
@@ -52,15 +72,9 @@ describe('ChyModPage', () => {
         lastWakePhrase: null,
       }
     })
-    vi.mocked(useUSBControl).mockReturnValue({
-      connection: 'connected',
-      connected: true,
-      capabilities: new Set(['chymod.describe', 'chymod.play', 'chymod.status', 'chymod.random', 'chymod.wake']),
-      error: null,
-      connect: vi.fn(async () => {}),
-      disconnect: vi.fn(async () => {}),
-      request,
-    })
+    vi.mocked(useCodexVoice).mockReturnValue(
+      voiceMock(request, ['chymod.describe', 'chymod.play', 'chymod.status', 'chymod.random', 'chymod.wake'])
+    )
 
     render(
       <I18nProvider>
@@ -105,15 +119,7 @@ describe('ChyModPage', () => {
       }
       return { version: 1, state: 'idle', randomEnabled: false, elapsedMs: 0, durationMs: null, nextRandomInMs: null }
     })
-    vi.mocked(useUSBControl).mockReturnValue({
-      connection: 'connected',
-      connected: true,
-      capabilities: new Set(['chymod.describe', 'chymod.status', 'chymod.motion']),
-      error: null,
-      connect: vi.fn(async () => {}),
-      disconnect: vi.fn(async () => {}),
-      request,
-    })
+    vi.mocked(useCodexVoice).mockReturnValue(voiceMock(request, ['chymod.describe', 'chymod.status', 'chymod.motion']))
 
     render(
       <I18nProvider>
@@ -166,15 +172,7 @@ describe('ChyModPage', () => {
       }
       return { version: 1, state: 'idle', randomEnabled: true, elapsedMs: 0, durationMs: null, nextRandomInMs: 3000 }
     })
-    vi.mocked(useUSBControl).mockReturnValue({
-      connection: 'connected',
-      connected: true,
-      capabilities: new Set(['chymod.describe', 'chymod.status', 'chymod.future']),
-      error: null,
-      connect: vi.fn(async () => {}),
-      disconnect: vi.fn(async () => {}),
-      request,
-    })
+    vi.mocked(useCodexVoice).mockReturnValue(voiceMock(request, ['chymod.describe', 'chymod.status', 'chymod.future']))
 
     render(
       <I18nProvider>

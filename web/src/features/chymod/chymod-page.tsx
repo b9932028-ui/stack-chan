@@ -8,9 +8,10 @@ import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Label } from '@/components/ui/label'
+import { CodexVoiceCard } from '@/features/chymod/codex-voice-card'
 import { ModDeployCard } from '@/features/chymod/mod-deploy-card'
 import { MotionControl, type MotionControlDescriptor, type MotionStatus } from '@/features/chymod/motion-control'
-import { useUSBControl } from '@/features/chymod/use-usb-control'
+import { useCodexVoice } from '@/features/chymod/use-codex-voice'
 
 type ActionControl = {
   id: string
@@ -74,7 +75,16 @@ function isStatus(value: unknown): value is ChyModStatus {
 
 export function ChyModPage() {
   const { t } = useI18n()
-  const usb = useUSBControl()
+  const voice = useCodexVoice()
+  const usb = {
+    connection: voice.connection === 'ready' ? 'connected' : voice.connection,
+    connected: voice.connection === 'ready',
+    capabilities: voice.controlCapabilities,
+    error: voice.error ? { message: voice.error } : null,
+    connect: voice.connect,
+    disconnect: voice.disconnect,
+    request: voice.requestControl,
+  }
   const [descriptor, setDescriptor] = useState<ChyModDescriptor | null>(null)
   const [status, setStatus] = useState<ChyModStatus | null>(null)
   const [commandError, setCommandError] = useState<string | null>(null)
@@ -152,6 +162,7 @@ export function ChyModPage() {
       </aside>
 
       <main className="grid min-w-0 gap-5">
+        <CodexVoiceCard voice={voice} />
         <Card>
           <CardHeader>
             <div className="flex flex-wrap items-center justify-between gap-3">

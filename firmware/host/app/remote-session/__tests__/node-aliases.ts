@@ -15,4 +15,5 @@ export function installRemoteSessionTestAliases(): void {
   writeAliasPackage(hostRoot, 'stackchan-realtime-session', resolve(remoteSessionRoot, 'realtime-session.js'))
   writeAliasPackage(hostRoot, 'stackchan-task-session', resolve(remoteSessionRoot, 'task-session.js'))
   writeAliasPackage(hostRoot, 'stackchan-remote-session-facade', resolve(remoteSessionRoot, 'facade.js'))
+  writeAliasPackage(hostRoot, 'usb-control-registry', resolve(hostRoot, 'modules/connectivity/usb-control-registry.js'))
 }

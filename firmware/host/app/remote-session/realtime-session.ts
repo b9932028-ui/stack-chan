@@ -41,9 +41,13 @@ export type RealtimeRetryScheduler = {
   clear(handle: unknown): void
 }
 
+/** Handles a non-Realtime JSON event on the shared USB EVENT channel. */
+export type RealtimeRawEventHandler = (event: Record<string, unknown>) => boolean | Promise<boolean>
+
 export type RealtimeSession = {
   readonly transportState: RemoteConversationTransportState
   setProvider(provider?: RealtimeToolProvider): void
+  addRawEventHandler(handler: RealtimeRawEventHandler): () => void
   addApplicationEventHandler(handler: (event: StackchanInboundApplicationEvent) => boolean): () => void
   sendApplicationEvent(event: StackchanOutboundApplicationEvent): Promise<RealtimeEventSendResult>
   subscribeTransport(listener: (state: RemoteConversationTransportState) => void): () => void
@@ -81,6 +85,7 @@ export function createRealtimeSession(bridge: RealtimeEventBridge, scheduler: Re
   let sendTail: Promise<void> = Promise.resolve()
   let closed = false
   const applicationEventHandlers = new Set<(event: StackchanInboundApplicationEvent) => boolean>()
+  const rawEventHandlers = new Set<RealtimeRawEventHandler>()
   const transportListeners = new Set<(state: RemoteConversationTransportState) => void>()
 
   const enqueueSend = <Result>(operation: () => Promise<Result>): Promise<Result> => {
@@ -316,6 +321,9 @@ export function createRealtimeSession(bridge: RealtimeEventBridge, scheduler: Re
     }
     if (!isRecord(value)) return
     const event = value
+    for (const handler of rawEventHandlers) {
+      if (await handler(event)) return
+    }
     switch (event.type) {
       case 'session.created':
         if (transportState !== 'ready') break
@@ -427,6 +435,10 @@ export function createRealtimeSession(bridge: RealtimeEventBridge, scheduler: Re
           log(`[remote-session] session.update failed: ${errorMessage(error)}\n`)
         })
       }
+    },
+    addRawEventHandler(handler) {
+      rawEventHandlers.add(handler)
+      return () => rawEventHandlers.delete(handler)
     },
     addApplicationEventHandler(handler) {
       applicationEventHandlers.add(handler)

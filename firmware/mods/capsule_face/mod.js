@@ -411,7 +411,7 @@ function isAnimationName(value) {
   return typeof value === 'string' && ANIMATION_NAMES.includes(value)
 }
 
-function createAnimationStateMachine() {
+function createAnimationStateMachine(onWake) {
   let state = 'idle'
   let elapsed = 0
   let randomEnabled = true
@@ -463,7 +463,30 @@ function createAnimationStateMachine() {
   const onWakeDetected = (phrase) => {
     wakeHitCount += 1
     lastWakePhrase = phrase
+    wakeWord?.close()
+    wakeWord = null
     enter('happy')
+    try {
+      if (onWake?.() !== true) resumeWake()
+    } catch (error) {
+      wakeError = String(error)
+      resumeWake()
+    }
+  }
+
+  const resumeWake = () => {
+    if (!wakeEnabled || wakeWord) return status()
+    wakeError = null
+    try {
+      wakeWord = new MicroWakeWord(onWakeDetected)
+      wakeWord.start()
+    } catch (error) {
+      wakeWord?.close()
+      wakeWord = null
+      wakeEnabled = false
+      wakeError = String(error)
+    }
+    return status()
   }
 
   const setWake = (value, persist = true) => {
@@ -471,16 +494,8 @@ function createAnimationStateMachine() {
     wakeError = null
     if (value !== wakeEnabled) {
       if (value) {
-        try {
-          wakeWord = new MicroWakeWord(onWakeDetected)
-          wakeWord.start()
-          wakeEnabled = true
-        } catch (error) {
-          wakeWord?.close()
-          wakeWord = null
-          wakeEnabled = false
-          wakeError = String(error)
-        }
+        wakeEnabled = true
+        resumeWake()
       } else {
         wakeWord?.close()
         wakeWord = null
@@ -503,6 +518,7 @@ function createAnimationStateMachine() {
       if (state === 'idle') elapsed = 0
       return status()
     },
+    resumeWake,
     setWake,
     setVisualListener(listener) {
       visualListener = listener
@@ -821,7 +837,12 @@ const CapsuleFace = FaceBase.template(($ = {}) => ({
 }))
 
 export function onContextCreated(robot, option) {
-  const machine = createAnimationStateMachine()
+  const remoteSession = robot.conversation.remoteSession
+  const machine = createAnimationStateMachine(() => {
+    if (!remoteSession) return false
+    remoteSession.requestStart()
+    return true
+  })
   registerChyModControls(machine, createMotionControl(robot.motion))
   // A MOD hook replaces the host hook, so preserve the host's USB controls and
   // other standard runtime services before installing the custom face.
@@ -830,5 +851,31 @@ export function onContextCreated(robot, option) {
   robot.ui.addEffect(new WorkingEffect({ machine }), 'chymod-working')
   robot.face.setColor('primary', 0xff, 0xff, 0xff)
   robot.face.setColor('secondary', 0x00, 0x00, 0x00)
-  if (Preference.get('chymod', 'wake') === true) machine.setWake(true, false)
+  if (remoteSession) {
+    if (remoteSession.activationState === 'inactive') remoteSession.activate()
+    remoteSession.subscribe((state) => {
+      switch (state) {
+        case 'listening':
+        case 'recognizing':
+          machine.play('working')
+          break
+        case 'speaking':
+          // Keep the main VM light while USB speech plays; "happy" stays the wake-word reaction.
+          machine.play('idle')
+          break
+        case 'blocked':
+          machine.play('angry')
+          machine.resumeWake()
+          break
+        case 'standby':
+          machine.play('idle')
+          machine.resumeWake()
+          break
+      }
+    })
+  }
+  // USB voice turns the wake word on by default, but an explicit "off" from the
+  // ChyMOD page wins; the wake word holds the microphone while it listens.
+  const wakePreference = Preference.get('chymod', 'wake')
+  if (wakePreference === true || (remoteSession && wakePreference !== false)) machine.setWake(true, false)
 }

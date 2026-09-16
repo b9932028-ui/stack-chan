@@ -1,0 +1,4 @@
+faster-whisper>=1.2,<2
+huggingface-hub>=0.21,<1
+click<8.4
+h11>=0.16

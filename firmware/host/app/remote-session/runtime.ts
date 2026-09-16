@@ -4,6 +4,7 @@ import { type ConversationRetryScheduler, createConversationSession } from 'stac
 import {
   createRealtimeSession,
   type RealtimeEventBridge,
+  type RealtimeRawEventHandler,
   type RealtimeSession,
   type RealtimeToolProvider,
 } from 'stackchan-realtime-session'
@@ -19,6 +20,7 @@ export type RemoteSessionActivation = {
 
 export type RemoteSessionRuntime = {
   activate(context: StackchanContext, provider: RealtimeToolProvider): RemoteSessionActivation
+  addRawEventHandler(handler: RealtimeRawEventHandler): () => void
   subscribeTaskState(listener: TaskStateListener): () => void
   close(): void
 }
@@ -83,6 +85,9 @@ export function createRemoteSessionRuntime(
     },
     subscribeTaskState(listener) {
       return taskSession.subscribe(listener)
+    },
+    addRawEventHandler(handler) {
+      return realtimeSession.addRawEventHandler(handler)
     },
     close() {
       if (closed) return

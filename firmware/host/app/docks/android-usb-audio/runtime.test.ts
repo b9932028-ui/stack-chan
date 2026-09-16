@@ -23,6 +23,7 @@ import type {
 installRemoteSessionTestAliases()
 
 const { createUsbAudioDockRuntime, resolveUsbAudioConfig } = await import('./runtime.js')
+const { registerUSBControlNamespace } = await import('usb-control-registry')
 
 test('MOD config may opt into USB audio without overriding host startup policy', () => {
   const defaultConfig: UsbAudioConfig = { enabled: false, autoStart: false }
@@ -75,6 +76,7 @@ class FakeBridge implements UsbAudioBridgeControl<number> {
   statusHandler: ((status: number) => void) | undefined
   presentation: UsbAudioPresentationControl | undefined
   speakerVolume: number
+  readonly sentEvents: Array<Record<string, unknown>> = []
 
   constructor(
     readonly id: number,
@@ -93,7 +95,8 @@ class FakeBridge implements UsbAudioBridgeControl<number> {
 
   setTransportStateHandler(): void {}
 
-  sendEvent(): Promise<'queued'> {
+  sendEvent(serialized: string): Promise<'queued'> {
+    this.sentEvents.push(JSON.parse(serialized) as Record<string, unknown>)
     return Promise.resolve('queued')
   }
 
@@ -124,6 +127,7 @@ function createHarness(config: UsbAudioConfig = {}, options: HarnessOptions = {}
   const sessions: FakeRemoteSession[] = []
   const taskListeners: Array<Set<(state: TaskExecutionState) => void>> = []
   const taskStates: TaskExecutionState[] = []
+  const rawEventHandlers = new Set<(event: Record<string, unknown>) => boolean | Promise<boolean>>()
   const presentationTaskStates: TaskExecutionState[] = []
   let imports = 0
   let moduleChecks = 0
@@ -150,6 +154,10 @@ function createHarness(config: UsbAudioConfig = {}, options: HarnessOptions = {}
       taskListeners.push(listeners)
       taskStates.push('idle')
       return {
+        addRawEventHandler(handler) {
+          rawEventHandlers.add(handler)
+          return () => rawEventHandlers.delete(handler)
+        },
         activate() {
           events.push(`runtime-${runtimeId}:activate`)
           const session = new FakeRemoteSession()
@@ -217,6 +225,12 @@ function createHarness(config: UsbAudioConfig = {}, options: HarnessOptions = {}
       taskStates[index] = state
       for (const listener of taskListeners[index] ?? []) listener(state)
     },
+    async receiveRawEvent(event: Record<string, unknown>) {
+      for (const handler of rawEventHandlers) {
+        if (await handler(event)) return true
+      }
+      return false
+    },
     get imports() {
       return imports
     },
@@ -228,6 +242,32 @@ function createHarness(config: UsbAudioConfig = {}, options: HarnessOptions = {}
     },
   }
 }
+
+test('shared EVENT transport advertises and routes registered ChyMOD controls', async () => {
+  const unregister = registerUSBControlNamespace('chymod', ['status'], (command, value) => ({ command, value }))
+  try {
+    const harness = createHarness({ autoStart: false })
+    assert.equal(await harness.receiveRawEvent({ type: 'session.created' }), false)
+    assert.deepEqual(harness.bridges[0]?.sentEvents[0], {
+      type: 'control.ready',
+      capabilities: ['chymod.status'],
+    })
+
+    assert.equal(
+      await harness.receiveRawEvent({ type: 'control.command', requestId: 7, command: 'chymod.status', value: 42 }),
+      true,
+    )
+    assert.deepEqual(harness.bridges[0]?.sentEvents[1], {
+      type: 'control.result',
+      requestId: 7,
+      ok: true,
+      result: { command: 'status', value: 42 },
+    })
+    harness.runtime.close()
+  } finally {
+    unregister()
+  }
+})
 
 test('manual mode reserves the physical bridge before context attachment without activating a session', () => {
   const harness = createHarness({ autoStart: false })
