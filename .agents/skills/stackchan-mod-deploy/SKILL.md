@@ -7,6 +7,20 @@ description: Create, build, and deploy Stack-chan firmware MODs in this reposito
 
 Work from `firmware/` and follow the repository `AGENTS.md`. Preserve unrelated working-tree changes and never edit generated files under `dist/`.
 
+## Windows toolchain environment
+
+The Moddable and ESP-IDF tools are installed locally but are not globally configured. A bare Codex PowerShell can therefore report `spawnSync mcrun ENOENT`, `spawn mcconfig ENOENT`, or `Cannot execute nmake!` even though the toolchain is present. Do not run `npm run setup` based only on those errors.
+
+Prefer the maintained helpers, which load the existing Visual Studio and Moddable environment:
+
+- Build any MOD: `cmd /d /c E:\MicroChan\output\build-mod.cmd mods/<mod-name>/manifest.json`
+- Build `capsule_face`: `cmd /d /c E:\MicroChan\output\build-mod.cmd`
+- Deploy a MOD to the confirmed COM7 device: `cmd /d /c E:\MicroChan\output\deploy-mod-com7.cmd mods/<mod-name>/manifest.json`
+
+The build helper initializes Visual Studio with `vcvars32.bat`, sets `MODDABLE=C:\Users\b9932\xs-dev\moddable`, and puts the Moddable release tools on `PATH`. Firmware and deployment helpers additionally use `IDF_TOOLS_PATH=C:\Users\b9932\.espressif` and the ESP-IDF environment under `C:\Users\b9932\xs-dev\esp32\esp-idf`.
+
+When diagnosing a helper failure, verify those existing paths and that `mcrun` and `nmake` resolve after initialization before considering reinstallation. Run raw `npm run mod:build` or `npm run mod` only from an already initialized Moddable/Visual Studio shell.
+
 ## Create or change a MOD
 
 1. Put the MOD in `mods/<mod-name>/`.
@@ -27,12 +41,12 @@ Work from `firmware/` and follow the repository `AGENTS.md`. Preserve unrelated 
 
 ## Check and build
 
-1. Run `npm run doctor` when the toolchain has not yet been confirmed. The Moddable SDK, `MODDABLE`, the platform compiler, and npm dependencies must be available; install only what the check shows is missing.
+1. Use the Windows helper above to confirm the existing toolchain. Treat `npm run doctor` from an ordinary PowerShell as incomplete evidence because that shell does not inherit the local SDK environment.
 2. Run the relevant focused test or lint check for changed code.
 3. Build without touching the device:
 
    ```console
-   npm run mod:build -- mods/<mod-name>/manifest.json --mode=release
+   cmd /d /c E:\MicroChan\output\build-mod.cmd mods/<mod-name>/manifest.json
    ```
 
 4. Confirm the archive exists at `dist/bin/esp32/release/<mod-name>/<mod-name>.xsa`.
@@ -42,7 +56,13 @@ Work from `firmware/` and follow the repository `AGENTS.md`. Preserve unrelated 
 Deploy only after the user has explicitly authorized writing to the device.
 
 1. Run `npm run scan` and identify the intended ESP32-S3 serial port. If multiple ports exist, do not guess.
-2. Install through the verified CLI path:
+2. For a confirmed COM7 device, install through the maintained helper:
+
+   ```console
+   cmd /d /c E:\MicroChan\output\deploy-mod-com7.cmd mods/<mod-name>/manifest.json
+   ```
+
+   For another confirmed port, use an initialized Moddable/Visual Studio shell and run:
 
    ```console
    npm run mod -- mods/<mod-name>/manifest.json --port <COM-port> --mode=release

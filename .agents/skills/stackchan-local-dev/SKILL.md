@@ -23,6 +23,10 @@ The Moddable and ESP-IDF environment is not globally configured. Use the maintai
 
 - Build: `cmd /c E:\MicroChan\output\build-firmware.cmd`
 - Deploy the release build to COM7: `cmd /c E:\MicroChan\output\deploy-firmware-com7.cmd`
+- Build a MOD: `cmd /d /c E:\MicroChan\output\build-mod.cmd mods/<mod-name>/manifest.json`
+- Deploy a MOD to a confirmed COM7 device: `cmd /d /c E:\MicroChan\output\deploy-mod-com7.cmd mods/<mod-name>/manifest.json`
+
+A bare PowerShell may report `mcrun`/`mcconfig` missing or fail to find `nmake` even when the SDK is installed. Use these helpers before concluding that setup is missing; they load Visual Studio, Moddable, and the required ESP-IDF environment from the existing local installation.
 
 For another serial port, start from `E:\MicroChan\output\build-firmware.cmd` and run `npm run deploy -- --port COM<n> --mode=release` after its environment setup. Do not invoke `mcconfig` directly or supply `-o`; repository scripts keep artifacts under `firmware/dist`.
 
