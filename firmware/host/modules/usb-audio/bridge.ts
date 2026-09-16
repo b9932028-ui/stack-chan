@@ -678,7 +678,10 @@ class UsbAudioBridge implements UsbAudioBridgeControl {
       microphone?.close()
     } catch {}
     this.#microphonePending = new Uint8Array(0)
-    if (streamId) this.#txQueue.dropMicrophoneFrames(streamId)
+    // A normal MIC_STOP must leave already captured PCM ahead of MIC_STOPPED in
+    // the TX queue. Dropping it makes the browser assemble a truncated recording.
+    // Error/abort paths do discard stale PCM because no recording will consume it.
+    if (streamId && !notify) this.#txQueue.dropMicrophoneFrames(streamId)
     if (notify && streamId) {
       this.#sendControl(StackChanControl.MIC_STOPPED, STACKCHAN_MICROPHONE_SAMPLE_RATE, undefined, streamId)
     }

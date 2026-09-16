@@ -9,7 +9,6 @@
   ],
   "modules": {
     "stackchan-usb-audio": "./worker-bridge",
-    "stackchan-usb-audio-input-read": "./audio-input-read",
     "stackchan-usb-audio-core": "./bridge",
     "stackchan-usb-audio-worker": "./worker",
     "stackchan-usb-connection-state": "./connection-state",
@@ -29,9 +28,13 @@
   },
   "platforms": {
     "esp32/m5stackchan_cores3": {
-      "dependency": [{ "idf": "esp_driver_usb_serial_jtag" }],
+      "dependency": [
+        { "idf": "esp_driver_usb_serial_jtag" },
+        { "idf": "esp_driver_i2s" }
+      ],
       "modules": {
         "stackchan-usb-crc32": "./usb-crc32",
+        "stackchan-usb-microphone-capture": "./microphone-capture",
         "stackchan-usb-serial": "./usb-serial"
       }
     }

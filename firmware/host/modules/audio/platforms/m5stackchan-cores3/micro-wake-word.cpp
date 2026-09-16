@@ -48,7 +48,14 @@
 #define MWW_RING_SAMPLES (16000)
 #define MWW_TASK_READ_SAMPLES (512)
 #define MWW_TASK_STACK_BYTES (10 * 1024)
-#define MWW_TASK_PRIORITY (tskIDLE_PRIORITY + 3)
+/*
+ * USB Audio's worker runs on core 1 at priority 5 so CDC traffic can preempt
+ * long UI renders. Wake-word inference shares that core and must briefly run
+ * above the transport worker; otherwise a connected/active USB worker can
+ * leave the PCM ring permanently full without producing a single feature.
+ * The task blocks on dataAvailable whenever the ring is empty.
+ */
+#define MWW_TASK_PRIORITY (tskIDLE_PRIORITY + 6)
 #define MWW_TASK_CORE (1)
 #define MWW_VARIABLE_ARENA_BYTES (10 * 1024)
 /* The upstream 26,080-byte manifest is low on some TFLM/esp-nn versions. */

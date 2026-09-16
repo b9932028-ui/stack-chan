@@ -5,6 +5,10 @@ export type SpeakerDrainResult = {
 
 type SpeakerQueueEntry = { kind: 'pcm'; payload: Uint8Array } | { kind: 'caption'; text: string }
 
+// The power level only animates the mouth, so sample every 8th PCM sample. This
+// worker outranks the main VM on core 1, where AudioOut is refilled.
+const POWER_SAMPLE_STRIDE = 8
+
 /**
  * PCM and caption queue shared by the USB receiver and AudioOut callback.
  *
@@ -68,7 +72,7 @@ export class SpeakerPlaybackBuffer {
       const count = Math.min(this.#writableBytes, available) & ~1
       if (count === 0) break
       const chunk = entry.payload.subarray(this.#entryOffset, this.#entryOffset + count)
-      for (let offset = 0; offset < chunk.byteLength; offset += 2) {
+      for (let offset = 0; offset < chunk.byteLength; offset += 2 * POWER_SAMPLE_STRIDE) {
         let sample = chunk[offset] | (chunk[offset + 1] << 8)
         if (sample & 0x8000) sample -= 0x10000
         sumSquares += sample * sample

@@ -7,21 +7,34 @@ import startUsbAudioBridge, {
 } from 'stackchan-usb-audio-core'
 import { crc32Usb } from 'stackchan-usb-crc32'
 import type { UsbEventTransportState } from 'stackchan-usb-event-transport'
+import { readMicrophoneCapture } from 'stackchan-usb-microphone-capture'
 import USBSerial from 'stackchan-usb-serial'
 import { type SharedSpeakerOutputBuffers, SharedSpeakerOutputService } from 'stackchan-usb-shared-output'
+import Timer from 'timer'
 import type { Self } from 'worker'
 
 declare const self: Self
 
 let bridge: UsbAudioBridgeControl | undefined
-let inputService: MainMicrophoneInputService | undefined
+let inputService: NativeMicrophoneInputService | undefined
 let outputService: SharedSpeakerOutputService | undefined
 
 type PostMessage = (message: Record<string, unknown>) => void
 
-class MainMicrophoneInput implements UsbAudioMicrophoneInput {
+const MICROPHONE_POLL_MILLISECONDS = 20
+// 128 ms of 16 kHz mono PCM per read; the native ring holds 3 seconds.
+const MICROPHONE_READ_BYTES = 4096
+const MICROPHONE_MAX_READS_PER_POLL = 16
+
+/**
+ * The main VM claims the shared I2S input and opens native capture; this worker
+ * drains the native ring directly, so a busy main VM cannot drop speech.
+ */
+class NativeMicrophoneInput implements UsbAudioMicrophoneInput {
   readonly #options: UsbAudioMicrophoneInputOptions
   readonly #postMessage: PostMessage
+  readonly #buffer = new Uint8Array(MICROPHONE_READ_BYTES)
+  #timer: ReturnType<typeof Timer.repeat> | undefined
   #active = false
   #closed = false
   #startPosted = false
@@ -51,6 +64,7 @@ class MainMicrophoneInput implements UsbAudioMicrophoneInput {
     if (this.#closed) return
     this.#closed = true
     this.#active = false
+    this.#stopPolling()
     this.#postMessage({ id: 'microphone-close', streamId: this.streamId })
   }
 
@@ -58,23 +72,42 @@ class MainMicrophoneInput implements UsbAudioMicrophoneInput {
     if (this.#closed || this.#active || !this.#startPosted) return
     this.#active = true
     this.#options.onStarted.call(this)
-  }
-
-  handleReadable(bytes: Uint8Array): void {
-    if (this.#closed || !this.#active || bytes.byteLength === 0) return
-    this.#options.onReadable.call(this, bytes)
+    if (!this.#active) return
+    this.#timer = Timer.repeat(() => this.#drain(), MICROPHONE_POLL_MILLISECONDS)
   }
 
   handleFailed(): void {
     if (this.#closed) return
     this.#active = false
+    this.#stopPolling()
     this.#options.onError.call(this)
+  }
+
+  #drain(): void {
+    for (let reads = 0; reads < MICROPHONE_MAX_READS_PER_POLL && this.#active; reads += 1) {
+      let byteLength: number
+      try {
+        byteLength = readMicrophoneCapture(this.#buffer)
+      } catch {
+        this.handleFailed()
+        return
+      }
+      if (byteLength <= 0) return
+      // The bridge copies the bytes into its own frame buffer before returning.
+      this.#options.onReadable.call(this, this.#buffer.subarray(0, byteLength))
+    }
+  }
+
+  #stopPolling(): void {
+    if (this.#timer === undefined) return
+    Timer.clear(this.#timer)
+    this.#timer = undefined
   }
 }
 
-class MainMicrophoneInputService {
+class NativeMicrophoneInputService {
   readonly #postMessage: PostMessage
-  #current: MainMicrophoneInput | undefined
+  #current: NativeMicrophoneInput | undefined
 
   constructor(postMessage: PostMessage) {
     this.#postMessage = postMessage
@@ -82,7 +115,7 @@ class MainMicrophoneInputService {
 
   readonly createInput: UsbAudioMicrophoneInputFactory = (options) => {
     this.#current?.close()
-    const input = new MainMicrophoneInput(options, this.#postMessage)
+    const input = new NativeMicrophoneInput(options, this.#postMessage)
     this.#current = input
     return input
   }
@@ -90,11 +123,6 @@ class MainMicrophoneInputService {
   handleStarted(streamId: number): void {
     if (this.#current?.streamId !== streamId) return
     this.#current.handleStarted()
-  }
-
-  handleReadable(streamId: number, bytes: Uint8Array): void {
-    if (this.#current?.streamId !== streamId) return
-    this.#current.handleReadable(bytes)
   }
 
   handleFailed(streamId: number): void {
@@ -156,7 +184,7 @@ function startWorker(message: {
 }): void {
   if (bridge) return
   if (!message.output) throw new TypeError('shared speaker output is required')
-  const nextInputService = new MainMicrophoneInputService((next) => self.postMessage(next))
+  const nextInputService = new NativeMicrophoneInputService((next) => self.postMessage(next))
   const nextOutputService = new SharedSpeakerOutputService(message.output, (next) => self.postMessage(next))
   let nextBridge: UsbAudioBridgeControl | undefined
   try {
@@ -208,7 +236,6 @@ self.onmessage = (message: {
   diagnostics?: boolean
   bitsPerSample?: number
   channels?: number
-  data?: Uint8Array | ArrayBuffer
   output?: SharedSpeakerOutputBuffers
   sampleRate?: number
   streamId?: number
@@ -232,12 +259,6 @@ self.onmessage = (message: {
         break
       case 'microphone-started':
         inputService?.handleStarted(message.streamId ?? 0)
-        break
-      case 'microphone-data':
-        if (message.data) {
-          const bytes = message.data instanceof Uint8Array ? message.data : new Uint8Array(message.data)
-          inputService?.handleReadable(message.streamId ?? 0, bytes)
-        }
         break
       case 'microphone-failed':
         inputService?.handleFailed(message.streamId ?? 0)

@@ -28,6 +28,18 @@ export function createSpeakerAmp() {
   if (port < 0) throw new Error('AW88298 did not answer on any I2C bus')
 
   let active = 0
+  // Notified with true when playback begins and false when the last hold ends. The
+  // wake word uses this to release the shared I2S port while the speaker plays.
+  const listeners = new Set()
+  const notify = (playing) => {
+    for (const listener of listeners) {
+      try {
+        listener(playing)
+      } catch (error) {
+        trace(`[speaker-amp] playback listener failed: ${error}\n`)
+      }
+    }
+  }
   const write = (value) => {
     try {
       nativeWrite.call(undefined, SYSCTRL_REGISTER, value)
@@ -43,15 +55,23 @@ export function createSpeakerAmp() {
     port,
     acquire() {
       active += 1
-      if (active === 1) write(SYSCTRL_ENABLED)
+      if (active !== 1) return
+      notify(true)
+      write(SYSCTRL_ENABLED)
     },
     release() {
       if (active === 0) return
       active -= 1
-      if (active === 0) write(SYSCTRL_DISABLED)
+      if (active !== 0) return
+      write(SYSCTRL_DISABLED)
+      notify(false)
     },
     get active() {
       return active
+    },
+    subscribe(listener) {
+      listeners.add(listener)
+      return () => listeners.delete(listener)
     },
     readSysctrl() {
       return nativeRead.call(undefined, SYSCTRL_REGISTER)

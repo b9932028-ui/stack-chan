@@ -1,9 +1,9 @@
-import AudioIn from 'embedded:io/audio/in'
 import AudioOut from 'embedded:io/audio/out'
-import { readAudioInputChunk } from 'stackchan-usb-audio-input-read'
+import { acquireAudioInput, releaseAudioInput } from 'audio-input-lock'
 import { UsbEventSendRequests } from 'stackchan-usb-event-send-requests'
 import type { UsbEventSendResult, UsbEventTransportState } from 'stackchan-usb-event-transport'
 import { StackChanStatus } from 'stackchan-usb-media-session'
+import { closeMicrophoneCapture, openMicrophoneCapture } from 'stackchan-usb-microphone-capture'
 import {
   resetSharedSpeakerOutputState,
   SPEAKER_STATS_AUDIO_ACTIVE,
@@ -49,7 +49,6 @@ type UsbAudioWorkerOptions = NonNullable<ConstructorParameters<typeof Worker>[1]
 }
 
 type AudioOutput = InstanceType<typeof AudioOut>
-type AudioInput = InstanceType<typeof AudioIn>
 type PendingCaption = { position: number; text: string }
 
 type SpeakerAmp = { acquire(): void; release(): void }
@@ -93,9 +92,18 @@ type UsbAudioWorkerMessage = {
 }
 
 const SHARED_PCM_RING_BYTES = 64 * 1024
+const MICROPHONE_INPUT_OWNER = 'USB microphone'
+// Matches -DI2S_DMA_BUFFER_MAX_SIZE in the CoreS3 platform manifest: AudioOut's DMA
+// block is (2048 / 2) frames of 2 bytes, five queued blocks ≈ 213 ms at 24 kHz.
+// 4092 was tried and USB playback failed outright, likely internal DMA memory.
 const SPEAKER_DMA_BUFFER_BYTES = 2048
-const SPEAKER_DMA_DRAIN_CALLBACKS = 5
-const SPEAKER_SILENCE = new Uint8Array(SPEAKER_DMA_BUFFER_BYTES)
+// One more callback than the five queued DMA blocks so the padded tail finishes playing.
+const SPEAKER_DMA_DRAIN_CALLBACKS = 6
+// Trailing silence: the rest of a partial block plus one full block.
+const SPEAKER_SILENCE = new Uint8Array(SPEAKER_DMA_BUFFER_BYTES * 2)
+// Mouth-animation level only: sample every 8th PCM sample and notify at most every 50 ms.
+const PLAYBACK_POWER_SAMPLE_STRIDE = 8
+const PLAYBACK_POWER_NOTIFY_MILLISECONDS = 50
 const SHARED_PCM_PUMP_MILLISECONDS = 10
 
 const USB_AUDIO_WORKER_OPTIONS: UsbAudioWorkerOptions = {
@@ -112,7 +120,8 @@ const USB_AUDIO_WORKER_OPTIONS: UsbAudioWorkerOptions = {
   nativeStack: 8 * 1024,
   core: 1,
   // The main XS task runs at priority 4. USB callbacks must preempt a long Piu
-  // render, while physical AudioOut consumption remains on the main VM.
+  // render, while physical AudioOut consumption remains on the main VM. The
+  // microphone is captured natively and drained by the worker (worker.ts).
   priority: 5,
 }
 
@@ -120,7 +129,7 @@ class UsbAudioWorkerBridge implements UsbAudioBridgeControl {
   #worker: Worker | undefined
   #outputRing = SharedByteRing.allocate(SHARED_PCM_RING_BYTES)
   #outputStats = new Int32Array(new SharedArrayBuffer(SPEAKER_STATS_WORDS * Int32Array.BYTES_PER_ELEMENT))
-  #microphone: AudioInput | undefined
+  #microphoneOpen = false
   #microphoneStreams = new CurrentStreamGate()
   #audio: AudioOutput | undefined
   #audioStreams = new CurrentStreamGate()
@@ -137,6 +146,7 @@ class UsbAudioWorkerBridge implements UsbAudioBridgeControl {
   #presentation: UsbAudioPresentation | undefined
   #presentationActive = false
   #presentationPower = 0
+  #presentationPowerTicks = 0
   #presentationText = ''
   #presentationStatus = StackChanStatus.IDLE
   #presentationStreamId = 0
@@ -383,39 +393,28 @@ class UsbAudioWorkerBridge implements UsbAudioBridgeControl {
       return
     }
 
-    const bridge = this
+    // The main VM only claims the shared I2S input and opens native capture. PCM
+    // is buffered natively and drained by the worker, so a long render here
+    // cannot drop speech (see microphone-capture.c).
     try {
-      const microphone = new AudioIn({
-        sampleRate,
-        channels,
-        bitsPerSample,
-        onReadable(size: number) {
-          bridge.#handleMicrophoneReadable(this, size)
-        },
-      })
-      this.#microphone = microphone
-      microphone.start()
-      this.#worker?.postMessage({ id: 'microphone-started', streamId })
+      acquireAudioInput(MICROPHONE_INPUT_OWNER)
     } catch (error) {
       this.#failMicrophone(error, streamId)
+      return
     }
-  }
-
-  #handleMicrophoneReadable(input: AudioInput, size: number): void {
-    const streamId = this.#microphoneStreams.current
-    const worker = this.#worker
-    if (input !== this.#microphone || !streamId || !worker || size <= 0) return
     try {
-      const bytes = readAudioInputChunk(input, size)
-      if (!bytes) return
-      worker.postMessage({ id: 'microphone-data', streamId, data: bytes })
+      openMicrophoneCapture()
     } catch (error) {
+      releaseAudioInput(MICROPHONE_INPUT_OWNER)
       this.#failMicrophone(error, streamId)
+      return
     }
+    this.#microphoneOpen = true
+    this.#worker?.postMessage({ id: 'microphone-started', streamId })
   }
 
   #failMicrophone(error: unknown, streamId = this.#microphoneStreams.current): void {
-    trace(`[usb-audio] AudioIn failed: ${error instanceof Error ? error.message : String(error)}\n`)
+    trace(`[usb-audio] microphone failed: ${error instanceof Error ? error.message : String(error)}\n`)
     const worker = this.#worker
     this.#closeMicrophone()
     worker?.postMessage({
@@ -428,13 +427,14 @@ class UsbAudioWorkerBridge implements UsbAudioBridgeControl {
   #closeMicrophone(expectedStreamId?: number): void {
     if (expectedStreamId !== undefined && !this.#microphoneStreams.isCurrent(expectedStreamId)) return
     const streamId = this.#microphoneStreams.current
-    const microphone = this.#microphone
-    this.#microphone = undefined
+    const open = this.#microphoneOpen
+    this.#microphoneOpen = false
     if (streamId) this.#microphoneStreams.clearIfCurrent(streamId)
-    if (!microphone) return
+    if (!open) return
     try {
-      microphone.close()
+      closeMicrophoneCapture()
     } catch {}
+    releaseAudioInput(MICROPHONE_INPUT_OWNER)
   }
 
   #openAudio(sampleRate: number, streamId: number): void {
@@ -449,7 +449,7 @@ class UsbAudioWorkerBridge implements UsbAudioBridgeControl {
       this.#failAudio(new RangeError(`unsupported speaker sample rate: ${sampleRate}`), streamId)
       return
     }
-    if (this.#microphone) {
+    if (this.#microphoneOpen) {
       this.#failAudio(new Error('microphone input is active'), streamId)
       return
     }
@@ -465,6 +465,9 @@ class UsbAudioWorkerBridge implements UsbAudioBridgeControl {
 
     const bridge = this
     try {
+      // Hold before constructing AudioOut: holders such as the wake word release the
+      // shared I2S port on acquire, and AudioOut configures that port's clock here.
+      this.#speakerAmp.acquire()
       const audio = new AudioOut({
         sampleRate,
         channels: 1,
@@ -532,7 +535,7 @@ class UsbAudioWorkerBridge implements UsbAudioBridgeControl {
         const use = source.byteLength & ~1
         if (use === 0) break
         const samples = use === source.byteLength ? source : source.subarray(0, use)
-        for (let offset = 0; offset < samples.byteLength; offset += 2) {
+        for (let offset = 0; offset < samples.byteLength; offset += 2 * PLAYBACK_POWER_SAMPLE_STRIDE) {
           let sample = samples[offset] | (samples[offset + 1] << 8)
           if (sample & 0x8000) sample -= 0x10000
           sumSquares += sample * sample
@@ -548,7 +551,11 @@ class UsbAudioWorkerBridge implements UsbAudioBridgeControl {
 
       if (sampleCount > 0) {
         this.#presentationPower = Math.sqrt(sumSquares / sampleCount)
-        this.#notifyPresentation(this.#presentation, 'onPlaybackPower', this.#presentationPower)
+        const now = Time.ticks
+        if ((now - this.#presentationPowerTicks) >>> 0 >= PLAYBACK_POWER_NOTIFY_MILLISECONDS) {
+          this.#presentationPowerTicks = now
+          this.#notifyPresentation(this.#presentation, 'onPlaybackPower', this.#presentationPower)
+        }
       } else if (this.#outputRing.readableBytes === 0) {
         this.#presentationPower = 0
         this.#notifyPresentation(this.#presentation, 'onPlaybackPower', 0)
@@ -556,7 +563,11 @@ class UsbAudioWorkerBridge implements UsbAudioBridgeControl {
       this.#flushCaptions()
 
       if (!this.#audioEnded || this.#outputRing.readableBytes !== 0) return
-      const padding = this.#audioBlockOffset === 0 ? 0 : SPEAKER_DMA_BUFFER_BYTES - this.#audioBlockOffset
+      // Finish the partial block and queue one more silent block, so the last speech
+      // block leaves the DMA queue before the drain callbacks are counted down.
+      const padding =
+        (this.#audioBlockOffset === 0 ? 0 : SPEAKER_DMA_BUFFER_BYTES - this.#audioBlockOffset) +
+        SPEAKER_DMA_BUFFER_BYTES
       if (padding > this.#audioWritableBytes) return
       if (padding > 0) {
         audio.write(SPEAKER_SILENCE.subarray(0, padding))
@@ -609,14 +620,17 @@ class UsbAudioWorkerBridge implements UsbAudioBridgeControl {
     this.#presentationPower = 0
     this.#notifyPresentation(this.#presentation, 'onPlaybackPower', 0)
     if (streamId) this.#audioStreams.clearIfCurrent(streamId)
+    // Stop I2S before releasing: release powers the amplifier down and lets the wake
+    // word reopen the shared port, which would cut or garble the tail still playing.
+    if (audio) {
+      try {
+        audio.stop()
+      } catch {}
+      try {
+        audio.close()
+      } catch {}
+    }
     this.#speakerAmp.release()
-    if (!audio) return
-    try {
-      audio.stop()
-    } catch {}
-    try {
-      audio.close()
-    } catch {}
   }
 
   #flushCaptions(): void {

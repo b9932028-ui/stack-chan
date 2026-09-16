@@ -120,12 +120,22 @@ Configuration is managed through preferences system with these key areas:
 
 On `m5stackchan_cores3`, the AW88298 speaker amplifier is powered down whenever nothing is playing. The microphone and speaker share I2S clocks, so while the always-on wake word records, an idle amplifier left powered makes the speaker hiss; lowering its volume does not help, powering it down does. The control lives in `firmware/host/platforms/m5stackchan_cores3/speaker-amp.js` and `speaker-amp.c`, and the board setup installs it as `globalThis.stackchanSpeakerAmp` with reference-counted `acquire()` and `release()`.
 
-- Every playback path must hold the amplifier while audio plays: call `acquire()` immediately before `AudioOut.start()` and `release()` after `stop()` or `close()`. A path that skips this is silent on this board. On boards without the control the hold is a no-op.
+- Every playback path must hold the amplifier while audio plays: call `acquire()` before constructing `AudioOut` (at the latest immediately before `AudioOut.start()`) and `release()` after `stop()` or `close()`. A path that skips this is silent on this board. On boards without the control the hold is a no-op.
+- The hold also coordinates the shared I2S port: `subscribe()` listeners hear `true` on the first hold and `false` after the last release, and the wake word (`micro-wake-word.js`) closes its `AudioIn` while playback is active. Recording while the speaker plays stretched a 14.6 s USB reply to 29.5 s of stuttering audio. Acquiring before constructing `AudioOut` keeps its clock configuration from racing the wake word's input.
 - Already covered: tone and WAV playback in `firmware/host/modules/audio/speaker.ts`; `tts-playback-lifecycle.ts`, which covers every TTS engine that plays through `lifecycle.openAudio` and `lifecycle.onReady` (local, remote, VoiceVox, VoiceVox web, ElevenLabs, OpenAI); `stackchan-voice/tts-stackchan-voice.ts`; WebRadio in `platforms/m5stackchan-cores3/web-radio-audio-out.ts`; and USB speaker audio in `firmware/host/modules/usb-audio/worker-bridge.ts`. Any new code that constructs `AudioOut` directly must add the hold.
 - The default `stackchan-voice` TTS speaks Japanese only (`stackchan-ja.aqd`). English speech needs another engine, such as ElevenLabs, OpenAI, or a remote or local TTS; those already hold the amplifier through the playback lifecycle.
 - Do not open I2C address `0x36` from JavaScript. Moddable's CoreS3 setup already owns that ECMA-419 handle, and a second one fails with `duplicate address`. Use the native functions in `speaker-amp.c`, which attach to the existing ESP-IDF I2C bus.
 - Do not rely on remapping `pins/audioout` or `embedded:io/audio/out` in the platform manifest to wrap playback: Moddable's own mappings take precedence and the override is silently ignored. Confirm what a module specifier compiles from in `firmware/dist/tmp/esp32/m5stackchan_cores3/release/stack-chan-host/makefile`.
 - Verify amplifier changes on the device, not only by build success: the boot trace must show `[m5stackchan] speaker amplifier powered down until playback`, and SYSCTRL (register `0x04`) must read `0x4003` while idle and `0x4040` while audio plays.
+
+## CoreS3 Microphone Capture Contract
+
+Moddable's ESP32 `AudioIn` (`embedded:io/audio/in`) runs its callbacks on the main XS machine and buffers only 16 KB natively, about 256 ms at 16 kHz stereo. When the main machine is busy, for example while a face animation such as the ChyMOD `working` effect renders, the buffer overflows and speech disappears silently: sequence numbers stay continuous and no error is raised. A USB recording made during that animation delivered about 8.5% of the audio.
+
+- Continuous captures that must not lose audio use native capture: `firmware/host/modules/usb-audio/microphone-capture.c`, exposed as `stackchan-usb-microphone-capture`. It reads I2S on its own task into a 3 second PSRAM ring. The main machine opens and closes it, and the reader, currently the USB worker, drains it directly.
+- The microphone, the wake word's `AudioIn`, and `AudioOut` all use I2S port 1 and share clocks. Claim `audio-input-lock` before opening native capture or `AudioIn`, and never capture while speaker output is active.
+- Do not add new continuous recording through `AudioIn` on the main machine. Short recordings such as the drawer's Record and play are acceptable, but they can still lose a word under load.
+- Verify capture changes with the ChyMOD page's Microphone diagnostics while an animation plays: `Audio received` should match the time between the first frame and `MIC_STOP sent`.
 
 ## Git Hooks
 

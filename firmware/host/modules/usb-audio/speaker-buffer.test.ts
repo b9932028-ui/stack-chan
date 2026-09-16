@@ -30,13 +30,14 @@ test('SpeakerPlaybackBuffer retains AudioOut space until USB PCM arrives', () =>
   assert.equal(buffer.writableBytes, 8)
 
   buffer.enqueueCaption('hello')
-  buffer.enqueuePcm(pcm16(1000, -1000, 2000, -2000))
+  // Constant amplitude, so the RMS level is the same however sparsely it is sampled.
+  buffer.enqueuePcm(pcm16(1500, -1500, 1500, -1500))
   const result = buffer.drain(
     (chunk) => writes.push(Array.from(chunk)),
     (text) => captions.push(text),
   )
   assert.equal(result.consumedBytes, 8)
-  assert.equal(Math.round(result.power), 1581)
+  assert.equal(Math.round(result.power), 1500)
   assert.equal(buffer.writableBytes, 0)
   assert.equal(buffer.pcmBytes, 0)
   assert.deepEqual(captions, ['hello'])

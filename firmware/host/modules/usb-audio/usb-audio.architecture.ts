@@ -54,7 +54,7 @@ test('CoreS3 composes the USB Dock without leaking it into shared or WASM graphs
   assert.equal(dockManifest.modules?.['stackchan-usb-dock-runtime'], './runtime')
 })
 
-test('USB transport stays platform-specific while physical audio remains on the main VM', () => {
+test('USB transport stays platform-specific; speaker output stays on the main VM, microphone capture is native', () => {
   const bridgeImports = importSpecifiers('host/modules/usb-audio/bridge.ts')
   const workerImports = importSpecifiers('host/modules/usb-audio/worker.ts')
   const workerBridgeImports = importSpecifiers('host/modules/usb-audio/worker-bridge.ts')
@@ -63,8 +63,13 @@ test('USB transport stays platform-specific while physical audio remains on the 
   assert.ok(workerImports.includes('stackchan-usb-crc32'))
   assert.ok(workerImports.includes('stackchan-usb-serial'))
   assert.ok(workerBridgeImports.includes('worker'))
-  assert.ok(workerBridgeImports.includes('embedded:io/audio/in'))
   assert.ok(workerBridgeImports.includes('embedded:io/audio/out'))
+  // AudioIn callbacks run on the main VM and drop speech during renders.
+  assert.ok(!workerBridgeImports.includes('embedded:io/audio/in'))
+  assert.ok(workerBridgeImports.includes('audio-input-lock'))
+  assert.ok(workerBridgeImports.includes('stackchan-usb-microphone-capture'))
+  assert.ok(workerImports.includes('stackchan-usb-microphone-capture'))
+  assert.ok(!bridgeImports.includes('stackchan-usb-microphone-capture'))
   assert.ok(!bridgeImports.some((specifier) => specifier.startsWith('embedded:io/audio/')))
   assert.ok(!workerImports.some((specifier) => specifier.startsWith('embedded:io/audio/')))
   assert.ok(bridgeImports.includes('stackchan-usb-serial-types'))
@@ -88,6 +93,33 @@ test('USB transport stays platform-specific while physical audio remains on the 
     usbModuleManifest.platforms?.['esp32/m5stackchan_cores3']?.modules?.['stackchan-usb-serial'],
     './usb-serial',
   )
+  assert.equal(usbModuleManifest.modules?.['stackchan-usb-microphone-capture'], undefined)
+  assert.equal(
+    usbModuleManifest.platforms?.['esp32/m5stackchan_cores3']?.modules?.['stackchan-usb-microphone-capture'],
+    './microphone-capture',
+  )
+})
+
+test('wake-word inference outranks the USB worker that shares core 1', () => {
+  const wakeSource = readFileSync('host/modules/audio/platforms/m5stackchan-cores3/micro-wake-word.cpp', 'utf8')
+  const workerSource = readFileSync('host/modules/usb-audio/worker-bridge.ts', 'utf8')
+  const wakePriority = Number(wakeSource.match(/MWW_TASK_PRIORITY \(tskIDLE_PRIORITY \+ (\d+)\)/)?.[1])
+  const workerPriority = Number(workerSource.match(/priority:\s*(\d+)/)?.[1])
+
+  assert.ok(Number.isFinite(wakePriority))
+  assert.ok(Number.isFinite(workerPriority))
+  assert.ok(wakePriority > workerPriority, 'wake inference must not be starved by the USB worker')
+})
+
+test('native microphone capture outranks the VMs that drain it', () => {
+  const captureSource = readFileSync('host/modules/usb-audio/microphone-capture.c', 'utf8')
+  const workerSource = readFileSync('host/modules/usb-audio/worker-bridge.ts', 'utf8')
+  const capturePriority = Number(captureSource.match(/#define CAPTURE_TASK_PRIORITY \((\d+)\)/)?.[1])
+  const workerPriority = Number(workerSource.match(/priority:\s*(\d+)/)?.[1])
+
+  assert.ok(Number.isFinite(capturePriority))
+  assert.ok(capturePriority > workerPriority, 'I2S capture must not wait for the USB worker')
+  assert.ok(capturePriority > 4, 'I2S capture must not wait for the main XS task')
 })
 
 test('release and diagnostic manifests compose the same USB Dock in layers', () => {
