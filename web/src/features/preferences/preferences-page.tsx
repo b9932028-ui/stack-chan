@@ -453,6 +453,27 @@ export function PreferencesPage() {
                 { value: 'en', label: 'English', translate: false },
                 { value: 'zh-CN', label: '简体中文', translate: false },
               ])}
+              <div className="grid gap-2 sm:col-span-2">
+                <div className="flex items-center justify-between gap-4">
+                  <Label htmlFor="ui.brightness">{t('画面の明るさ')}</Label>
+                  <output htmlFor="ui.brightness" className="text-sm tabular-nums text-muted-foreground">
+                    {preferences.values['ui.brightness']}%
+                  </output>
+                </div>
+                <input
+                  id="ui.brightness"
+                  name="ui.brightness"
+                  type="range"
+                  min="0"
+                  max="100"
+                  step="1"
+                  value={preferences.values['ui.brightness']}
+                  disabled={!preferences.connected || preferences.readOnly.has('ui.brightness')}
+                  className="h-2 w-full cursor-pointer accent-primary disabled:cursor-not-allowed disabled:opacity-50"
+                  onChange={(event) => preferences.update('ui.brightness', event.target.value)}
+                />
+                <p className="text-xs leading-5 text-muted-foreground">{t('設定を保存すると本体へ反映されます。')}</p>
+              </div>
             </>
           )}
           {section(

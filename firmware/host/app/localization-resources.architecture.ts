@@ -25,6 +25,7 @@ function placeholders(value: string): string[] {
 const placeholderContracts: Record<string, string[]> = {
   'mods.confirm': ['name'],
   'settings.volumeValue': ['percent'],
+  'settings.brightnessValue': ['percent'],
   'settings.wifiStatus': ['status'],
   'splash.connecting': ['attempt', 'maxAttempts'],
 }

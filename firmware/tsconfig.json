@@ -75,6 +75,9 @@
       "volume-model": [
         "./host/modules/preferences/volume-model"
       ],
+      "brightness-model": [
+        "./host/modules/preferences/brightness-model"
+      ],
       "volume-preview": [
         "./host/app/volume-preview"
       ],

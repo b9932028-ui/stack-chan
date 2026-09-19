@@ -7,11 +7,18 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from '@/components/ui/card'
 import { Checkbox } from '@/components/ui/checkbox'
+import { Input } from '@/components/ui/input'
 import { Label } from '@/components/ui/label'
+import { RadioGroup, RadioGroupItem } from '@/components/ui/radio-group'
 import { CodexVoiceCard } from '@/features/chymod/codex-voice-card'
 import { ModDeployCard } from '@/features/chymod/mod-deploy-card'
 import { MotionControl, type MotionControlDescriptor, type MotionStatus } from '@/features/chymod/motion-control'
 import { useCodexVoice } from '@/features/chymod/use-codex-voice'
+import {
+  type WakeOrientation,
+  WakeOrientationCard,
+  type WakeOrientationDescriptor,
+} from '@/features/chymod/wake-orientation-card'
 
 type ActionControl = {
   id: string
@@ -28,9 +35,22 @@ type ToggleControl = {
   label?: string
 }
 
+type TeamsPresence = 'available' | 'busy' | 'away'
+
+type TeamsStatusControl = {
+  id: string
+  kind: 'teams-status'
+  command: string
+  statusKey: 'teamsStatus'
+  presences: TeamsPresence[]
+  maxLength: number
+}
+
 type ChyModDescriptor = {
   version: number
-  controls: Array<ActionControl | ToggleControl | MotionControlDescriptor>
+  controls: Array<
+    ActionControl | ToggleControl | TeamsStatusControl | MotionControlDescriptor | WakeOrientationDescriptor
+  >
 }
 
 type ChyModStatus = {
@@ -44,7 +64,21 @@ type ChyModStatus = {
   wakeError?: string | null
   wakeHitCount?: number
   lastWakePhrase?: string | null
+  wakeOrientation?: WakeOrientation | null
+  teamsStatus?: { presence: TeamsPresence; message: string }
   motion?: MotionStatus
+}
+
+const teamsPresenceLabels: Record<TeamsPresence, string> = {
+  available: 'Available',
+  busy: 'Busy',
+  away: 'Away',
+}
+
+const teamsPresenceColors: Record<TeamsPresence, string> = {
+  available: 'bg-[#78a81f]',
+  busy: 'bg-[#c4314b]',
+  away: 'bg-[#f5c400]',
 }
 
 const animationLabels: Record<string, string> = {
@@ -54,6 +88,8 @@ const animationLabels: Record<string, string> = {
   happy: '開心',
   angry: '生氣',
   working: '工作中',
+  microsoft: 'Microsoft',
+  rainbow: 'Rainbow',
 }
 
 /**
@@ -89,9 +125,28 @@ export function ChyModPage() {
   const [status, setStatus] = useState<ChyModStatus | null>(null)
   const [commandError, setCommandError] = useState<string | null>(null)
   const [busyControl, setBusyControl] = useState<string | null>(null)
+  const [teamsPresence, setTeamsPresence] = useState<TeamsPresence>('available')
+  const [teamsMessage, setTeamsMessage] = useState('WFH')
+  const [teamsDraftInitialized, setTeamsDraftInitialized] = useState(false)
+  const animationControl = descriptor?.controls.find(
+    (control): control is ActionControl => control.kind === 'actions' && control.command === 'chymod.play'
+  )
   const motionControl = descriptor?.controls.find(
     (control): control is MotionControlDescriptor => control.kind === 'motion'
   )
+  const wakeOrientationControl = descriptor?.controls.find(
+    (control): control is WakeOrientationDescriptor => control.kind === 'orientation'
+  )
+  const teamsStatusControl = descriptor?.controls.find(
+    (control): control is TeamsStatusControl => control.kind === 'teams-status'
+  )
+
+  useEffect(() => {
+    if (teamsDraftInitialized || !status?.teamsStatus) return
+    setTeamsPresence(status.teamsStatus.presence)
+    setTeamsMessage(status.teamsStatus.message)
+    setTeamsDraftInitialized(true)
+  }, [status?.teamsStatus, teamsDraftInitialized])
 
   const refreshStatus = useCallback(async () => {
     if (!usb.capabilities.has('chymod.status')) return
@@ -234,28 +289,27 @@ export function ChyModPage() {
               </dl>
             )}
 
+            {animationControl && (
+              <section className="grid gap-3">
+                <Label>{t('立即播放')}</Label>
+                <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
+                  {animationControl.options.map((animation) => (
+                    <Button
+                      key={animation}
+                      type="button"
+                      variant={status?.state === animation ? 'default' : 'outline'}
+                      disabled={!usb.connected || busyControl !== null}
+                      onClick={() => void runCommand(animationControl.id, animationControl.command, animation)}
+                    >
+                      {t(animationLabels[animation] ?? animation)}
+                    </Button>
+                  ))}
+                </div>
+              </section>
+            )}
+
             {descriptor?.controls.map((control) => {
-              if (control.kind === 'motion') return null
-              if (control.kind === 'actions') {
-                return (
-                  <section key={control.id} className="grid gap-3">
-                    <Label>{t('立即播放')}</Label>
-                    <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
-                      {control.options.map((option) => (
-                        <Button
-                          key={option}
-                          type="button"
-                          variant={status?.state === option ? 'default' : 'outline'}
-                          disabled={!usb.connected || busyControl !== null}
-                          onClick={() => void runCommand(control.id, control.command, option)}
-                        >
-                          {t(animationLabels[option] ?? option)}
-                        </Button>
-                      ))}
-                    </div>
-                  </section>
-                )
-              }
+              if (control.kind !== 'toggle') return null
               return (
                 <section key={control.id} className="flex items-center gap-3 rounded-lg border p-4">
                   <Checkbox
@@ -280,6 +334,75 @@ export function ChyModPage() {
             })}
           </CardContent>
         </Card>
+        {teamsStatusControl && (
+          <Card>
+            <CardHeader>
+              <CardTitle>Teams Status</CardTitle>
+              <CardDescription>Show a Teams icon, presence light, and short message on the display.</CardDescription>
+            </CardHeader>
+            <CardContent className="grid gap-5">
+              <div className="grid gap-3">
+                <Label>Presence</Label>
+                <RadioGroup
+                  value={teamsPresence}
+                  onValueChange={(value) => setTeamsPresence(value as TeamsPresence)}
+                  className="sm:grid-cols-3"
+                >
+                  {teamsStatusControl.presences.map((presence) => (
+                    <Label
+                      key={presence}
+                      htmlFor={`chymod-teams-${presence}`}
+                      className="flex cursor-pointer items-center gap-3 rounded-lg border p-3"
+                    >
+                      <RadioGroupItem
+                        id={`chymod-teams-${presence}`}
+                        value={presence}
+                        disabled={!usb.connected || busyControl !== null}
+                      />
+                      <span className={`size-4 rounded-sm ${teamsPresenceColors[presence]}`} aria-hidden="true" />
+                      {teamsPresenceLabels[presence]}
+                    </Label>
+                  ))}
+                </RadioGroup>
+              </div>
+              <div className="grid gap-2">
+                <Label htmlFor="chymod-teams-message">Message</Label>
+                <Input
+                  id="chymod-teams-message"
+                  value={teamsMessage}
+                  maxLength={teamsStatusControl.maxLength}
+                  disabled={!usb.connected || busyControl !== null}
+                  placeholder="WFH"
+                  onChange={(event) => setTeamsMessage(event.target.value)}
+                />
+                <p className="text-xs text-muted-foreground">
+                  {teamsMessage.length}/{teamsStatusControl.maxLength} characters
+                </p>
+              </div>
+              <Button
+                type="button"
+                disabled={!usb.connected || busyControl !== null}
+                onClick={() =>
+                  void runCommand(teamsStatusControl.id, teamsStatusControl.command, {
+                    presence: teamsPresence,
+                    message: teamsMessage,
+                  })
+                }
+              >
+                Show Teams status
+              </Button>
+            </CardContent>
+          </Card>
+        )}
+        {wakeOrientationControl && (
+          <WakeOrientationCard
+            control={wakeOrientationControl}
+            status={status ? (status.wakeOrientation ?? null) : undefined}
+            connected={usb.connected}
+            request={usb.request}
+            onError={setCommandError}
+          />
+        )}
         {motionControl && (
           <MotionControl
             control={motionControl}

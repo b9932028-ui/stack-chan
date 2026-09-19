@@ -9,6 +9,7 @@
   ],
   "modules": {
     "consts": "./consts",
+    "brightness-model": "./brightness-model",
     "loadPreference": "./loadPreference",
     "timezone-model": "./timezone-model",
     "timezone-settings": "./timezone-settings",

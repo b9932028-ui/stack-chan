@@ -66,3 +66,47 @@ describe('USB Audio v2 protocol', () => {
     expect(output.getInt16(2, true)).toBe(-16_000)
   })
 })
+
+describe('StackChanFrameParser device text', () => {
+  it('hands back the non-frame bytes that share the wire with the protocol', () => {
+    const parser = new StackChanFrameParser()
+    const discarded: string[] = []
+    parser.onDiscarded = (bytes) => {
+      let text = ''
+      for (const byte of bytes) text += String.fromCharCode(byte)
+      discarded.push(text)
+    }
+
+    const frame = encodeStackChanFrame({
+      type: StackChanFrameType.CONTROL,
+      flags: StackChanControl.HELLO_ACK,
+      streamId: 0,
+      sequence: 0,
+    })
+    const trace = new TextEncoder().encode('[crash] XS abort: not enough memory\n')
+    const stream = new Uint8Array(trace.byteLength + frame.byteLength)
+    stream.set(trace)
+    stream.set(frame, trace.byteLength)
+
+    const frames = parser.push(stream)
+    expect(frames).toHaveLength(1)
+    expect(discarded.join('')).toBe('[crash] XS abort: not enough memory\n')
+    expect(parser.discardedBytes).toBe(trace.byteLength)
+  })
+
+  it('reports nothing when every byte belongs to a frame', () => {
+    const parser = new StackChanFrameParser()
+    const discarded: Uint8Array[] = []
+    parser.onDiscarded = (bytes) => discarded.push(bytes)
+
+    parser.push(
+      encodeStackChanFrame({
+        type: StackChanFrameType.CONTROL,
+        flags: StackChanControl.HELLO_ACK,
+        streamId: 0,
+        sequence: 0,
+      })
+    )
+    expect(discarded).toHaveLength(0)
+  })
+})

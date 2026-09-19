@@ -1,4 +1,5 @@
 import type { PreferenceConfig } from 'loadPreference'
+import { canonicalizeBrightness } from 'brightness-model'
 import { type SettingsStatus, SettingsStatusValue } from 'settings-status-model'
 import { canonicalizeVolume } from 'volume-model'
 
@@ -11,6 +12,7 @@ export function createInitialSettingsStatus(preferences: SetupPreferenceConfig):
     'wifi.ssid': stringPreference(preferences.wifi.ssid),
     'wifi.password': stringPreference(preferences.wifi.password),
     'ui.language': stringPreference(preferences.ui?.language),
+    'ui.brightness': canonicalizeBrightness(preferences.ui?.brightness),
     'time.timezone': stringPreference(preferences.time?.timezone),
     'tts.volume': canonicalizeVolume(preferences.tts?.volume),
   }

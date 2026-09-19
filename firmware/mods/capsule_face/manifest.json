@@ -7,6 +7,9 @@
     "*": ["./mod"],
     "capsule-face-animations/*": "./animations/*"
   },
+  "data": {
+    "*": ["./assets/wake-chime"]
+  },
   "config": {
     "usbAudio": {
       "enabled": true

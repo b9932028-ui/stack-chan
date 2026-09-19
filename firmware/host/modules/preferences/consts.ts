@@ -15,6 +15,7 @@ export const PREF_KEYS: readonly [keyof typeof DOMAIN, string, StringConstructor
     [DOMAIN.wifi, 'password', String],
     [DOMAIN.ui, 'type', String],
     [DOMAIN.ui, 'language', String],
+    [DOMAIN.ui, 'brightness', Number],
     [DOMAIN.driver, 'type', String],
     [DOMAIN.driver, 'baudrate', Number],
     [DOMAIN.driver, 'offsetPan', Number],

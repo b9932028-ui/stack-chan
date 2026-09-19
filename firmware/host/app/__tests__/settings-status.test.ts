@@ -16,6 +16,7 @@ function installBareSpecifierPackages(): void {
   )
   writeAliasPackage(hostRoot, 'localization', resolve(modulesRoot, 'testing/fakes/localization.js'))
   writeAliasPackage(hostRoot, 'volume-model', resolve(modulesRoot, 'preferences/volume-model.js'))
+  writeAliasPackage(hostRoot, 'brightness-model', resolve(modulesRoot, 'preferences/brightness-model.js'))
 }
 
 async function setup() {
@@ -71,4 +72,14 @@ test('settings status exposes a canonical volume for the on-device slider', asyn
 
   assert.equal(configured['tts.volume'], 0.46)
   assert.equal(fallback['tts.volume'], 0.5)
+})
+
+test('settings status exposes a canonical display brightness', async () => {
+  const { createInitialSettingsStatus } = await setup()
+
+  const configured = createInitialSettingsStatus({ wifi: {}, ui: { brightness: 42.7 } })
+  const fallback = createInitialSettingsStatus({ wifi: {} })
+
+  assert.equal(configured['ui.brightness'], 43)
+  assert.equal(fallback['ui.brightness'], 100)
 })

@@ -42,6 +42,23 @@ describe('PreferencesPage', () => {
     expect(token).toHaveAttribute('name', 'mcp.token')
     expect(token).toHaveAttribute('type', 'password')
   })
+
+  it('shows and edits the display brightness preference', () => {
+    const update = vi.fn()
+    const defaults = vi.mocked(usePreferences)()
+    vi.mocked(usePreferences).mockReturnValue({ ...defaults, update })
+    render(
+      <I18nProvider>
+        <PreferencesPage />
+      </I18nProvider>
+    )
+
+    const brightness = screen.getByLabelText('画面の明るさ')
+    expect(brightness).toHaveAttribute('type', 'range')
+    expect(brightness).toHaveValue('100')
+    fireEvent.change(brightness, { target: { value: '35' } })
+    expect(update).toHaveBeenCalledWith('ui.brightness', '35')
+  })
   it.each([
     ['restart', '再起動'],
     ['shutdown', '電源を切る'],

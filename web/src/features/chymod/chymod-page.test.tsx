@@ -96,6 +96,92 @@ describe('ChyModPage', () => {
     await waitFor(() => expect(request).toHaveBeenCalledWith('chymod.wake', true))
   })
 
+  it('renders every animation reported by the MOD without a frontend allowlist', async () => {
+    const request = vi.fn(async (command: string) => {
+      if (command === 'chymod.describe') {
+        return {
+          version: 1,
+          controls: [
+            {
+              id: 'animation',
+              kind: 'actions',
+              command: 'chymod.play',
+              options: ['idle', 'surprised', 'dance-v2'],
+            },
+          ],
+        }
+      }
+      return {
+        version: 1,
+        state: 'idle',
+        randomEnabled: false,
+        elapsedMs: 0,
+        durationMs: null,
+        nextRandomInMs: null,
+      }
+    })
+    vi.mocked(useCodexVoice).mockReturnValue(voiceMock(request, ['chymod.describe', 'chymod.play', 'chymod.status']))
+
+    render(
+      <I18nProvider>
+        <ChyModPage />
+      </I18nProvider>
+    )
+
+    expect(await screen.findByRole('button', { name: 'surprised' })).toBeInTheDocument()
+    const danceButton = screen.getByRole('button', { name: 'dance-v2' })
+    fireEvent.click(danceButton)
+    await waitFor(() => expect(request).toHaveBeenCalledWith('chymod.play', 'dance-v2'))
+  })
+
+  it('renders Teams Status separately and sends presence plus a custom message', async () => {
+    const request = vi.fn(async (command: string) => {
+      if (command === 'chymod.describe') {
+        return {
+          version: 1,
+          controls: [
+            { id: 'animation', kind: 'actions', command: 'chymod.play', options: ['idle'] },
+            {
+              id: 'teamsStatus',
+              kind: 'teams-status',
+              command: 'chymod.teams-status',
+              statusKey: 'teamsStatus',
+              presences: ['available', 'busy', 'away'],
+              maxLength: 12,
+            },
+          ],
+        }
+      }
+      return {
+        version: 1,
+        state: command === 'chymod.teams-status' ? 'teams' : 'idle',
+        randomEnabled: false,
+        elapsedMs: 0,
+        durationMs: 6000,
+        nextRandomInMs: null,
+        teamsStatus: { presence: 'available', message: 'WFH' },
+      }
+    })
+    vi.mocked(useCodexVoice).mockReturnValue(
+      voiceMock(request, ['chymod.describe', 'chymod.play', 'chymod.status', 'chymod.teams-status'])
+    )
+
+    render(
+      <I18nProvider>
+        <ChyModPage />
+      </I18nProvider>
+    )
+
+    expect(await screen.findByText('Teams Status')).toBeInTheDocument()
+    fireEvent.click(screen.getByRole('radio', { name: 'Busy' }))
+    fireEvent.change(screen.getByRole('textbox', { name: 'Message' }), { target: { value: 'IN A CALL' } })
+    fireEvent.click(screen.getByRole('button', { name: 'Show Teams status' }))
+
+    await waitFor(() =>
+      expect(request).toHaveBeenCalledWith('chymod.teams-status', { presence: 'busy', message: 'IN A CALL' })
+    )
+  })
+
   it('renders the ported motion panel and sends app-shaped controlMotion commands', async () => {
     const request = vi.fn(async (command: string) => {
       if (command === 'chymod.describe') {

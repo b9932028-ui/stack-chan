@@ -1,5 +1,6 @@
 import { loadPreferenceConfig } from 'loadPreference'
 import { DOMAIN, PREF_KEYS } from 'consts'
+import { applyDisplayBrightness } from 'display-brightness'
 import { getLocalizationLanguage, normalizeLocale, type SupportedLocale, setLocalizationLanguage } from 'localization'
 import { NetworkConnectionState, type NetworkConnectionState as NetworkState } from 'network-state'
 import Preference from 'preference'
@@ -54,6 +55,7 @@ export function startSetupMode(application: SettingsApplication): Promise<SetupM
     const preferences = loadPreferenceConfig()
     preferences.time.timezone = applySystemTimezone(preferences.time.timezone)
     preferences.tts.volume = canonicalizeVolume(preferences.tts.volume)
+    preferences.ui.brightness = applyDisplayBrightness(preferences.ui.brightness)
     const status = createInitialSettingsStatus(preferences)
     const effectiveValues = Object.fromEntries(
       PREF_KEYS.flatMap(([domain, key]) => {
@@ -68,6 +70,7 @@ export function startSetupMode(application: SettingsApplication): Promise<SetupM
       language: getLocalizationLanguage(),
       timezone: preferences.time.timezone as TimezoneId,
       volume: preferences.tts.volume as number,
+      brightness: preferences.ui.brightness as number,
     }
     const volumeSpeaker = new Speaker({ volume: viewState.volume })
     const volumePreviewQueue = new VolumePreviewQueue({
@@ -96,6 +99,10 @@ export function startSetupMode(application: SettingsApplication): Promise<SetupM
         selectLanguage: (locale: SupportedLocale) => applyLanguage(locale, true),
         saveTimezone,
         saveVolume,
+        previewBrightness: (brightness: number) => {
+          applyDisplayBrightness(brightness)
+        },
+        saveBrightness: (brightness: number) => applyBrightness(brightness, true),
       },
     }
 
@@ -182,6 +189,15 @@ export function startSetupMode(application: SettingsApplication): Promise<SetupM
       applyVolume(value, true, true)
     }
 
+    function applyBrightness(value: unknown, persist: boolean) {
+      const brightness = applyDisplayBrightness(value)
+      status['ui.brightness'] = brightness
+      viewState.brightness = brightness
+      if (persist) Preference.set(DOMAIN.ui, 'brightness', brightness)
+      updateCurrentView()
+      return brightness
+    }
+
     function scanNetworks() {
       cancelWifiScan()
       scanResults = []
@@ -266,6 +282,10 @@ export function startSetupMode(application: SettingsApplication): Promise<SetupM
           applyVolume(value, false, false)
           return
         }
+        if (key === `${DOMAIN.ui}.brightness`) {
+          applyBrightness(value, false)
+          return
+        }
         status[key] = value
         updateCurrentView()
       },
@@ -296,6 +316,10 @@ export function startSetupMode(application: SettingsApplication): Promise<SetupM
           }
           if (key === `${DOMAIN.tts}.volume`) {
             applyVolume(value, false, false)
+            return
+          }
+          if (key === `${DOMAIN.ui}.brightness`) {
+            applyBrightness(value, false)
             return
           }
           status[key] = value

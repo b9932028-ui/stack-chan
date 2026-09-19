@@ -1,17 +1,47 @@
+import Resource from 'Resource'
 import { onContextCreated as initializeDefaultContext } from 'app-default-behavior/on-context-created'
 import { FaceBase } from 'behaviors/face'
-import { ANIMATION_NAMES, ANIMATIONS, WorkingEffect } from 'capsule-face-animations/index'
+import {
+  ANIMATION_NAMES,
+  ANIMATIONS,
+  ListeningEffect,
+  MicrosoftEffect,
+  PLAY_ANIMATION_NAMES,
+  RANDOM_ANIMATION_NAMES,
+  RainbowEffect,
+  SpeakingEffect,
+  TEAMS_PRESENCES,
+  TeamsEffect,
+  ThinkingEffect,
+  WaitingInputEffect,
+  WorkingEffect,
+} from 'capsule-face-animations/index'
 import { Outline } from 'commodetto/outline'
 import { Emoticon } from 'effects/emoticon'
 import { Emotion } from 'face-state'
 import MicroWakeWord from 'micro-wake-word'
+import Modules from 'modules'
 import { getFillSkin } from 'parts/shape-utils'
 import Preference from 'preference'
+import Speaker from 'speaker'
 import { defineShapeTemplate } from 'template'
 import Timer from 'timer'
 import { registerUSBControlNamespace } from 'usb-control-registry'
 
 const IDLE_DECISION_MS = 3000
+
+// Acknowledgement chime for "Hey Copilot". The microphone and the speaker share
+// I2S port 1, so the chime has to finish before the utterance is recorded; see
+// the CoreS3 Speaker Amplifier Contract in AGENTS.md.
+const WAKE_CHIME_RESOURCE = 'wake-chime.wav'
+// The shared Speaker built by the host follows the TTS volume preference, which
+// is low enough that the chime disappears, so this MOD owns its own playback level.
+// The asset peaks near full scale; the CoreS3 amplifier distorts on a sustained tone
+// at that level, so play it 8 dB down. Speech survives it because it is not sustained.
+const WAKE_CHIME_VOLUME = 0.4
+// Hand over to listening halfway through "happy": waiting out the whole reaction
+// read as a stall before the robot started hearing anything.
+const WAKE_REACTION_MILLISECONDS = Math.round(ANIMATIONS.happy.duration / 2)
 
 // Motion panel ported from the M5Stack StackChan app. Angles are in 0.1 degrees,
 // the same unit and ranges as the app and its servo configuration.
@@ -20,6 +50,9 @@ const MOTION_PITCH_ANGLE_LIMIT = Object.freeze({ min: 0, max: 900 })
 const MOTION_SPEED_LIMIT = Object.freeze({ min: 0, max: 1000 })
 const MOTION_ROTATE_LIMIT = Object.freeze({ min: -1000, max: 1000 })
 const MOTION_DEFAULT_SPEED = 500
+// "Wake up orientation" turns at the middle of the speed range, about 0.45 s per move.
+const WAKE_ORIENTATION_SPEED = MOTION_DEFAULT_SPEED
+const WAKE_ORIENTATION_KEY = 'wakeOrientation'
 // The app firmware releases torque once a servo is at rest, checking every 200 ms.
 const MOTION_TORQUE_RELEASE_MS = 200
 const DECIDEGREES_PER_RADIAN = 1800 / Math.PI
@@ -174,23 +207,93 @@ function isAnimationName(value) {
   return typeof value === 'string' && ANIMATION_NAMES.includes(value)
 }
 
-function createAnimationStateMachine(onWake) {
+/**
+ * Heap figures from the host's native helper. USB playback has been aborting the
+ * main machine with "Chunk allocation: failed", which is the system allocator
+ * refusing, so the status report carries what memory looked like at the time.
+ */
+function readMemory() {
+  try {
+    if (!Modules.has('stackchan-crash-diagnostics')) return null
+    return Modules.importNow('stackchan-crash-diagnostics')()
+  } catch (error) {
+    trace(`[chymod] memory diagnostics unavailable: ${error}\n`)
+    return null
+  }
+}
+
+/** Stored as "yaw,pitch" so the preference stays a plain string. */
+function readWakeOrientationPreference() {
+  const stored = Preference.get('chymod', WAKE_ORIENTATION_KEY)
+  if (typeof stored !== 'string') return null
+  const parts = stored.split(',')
+  if (parts.length !== 2) return null
+  const yaw = Number(parts[0])
+  const pitch = Number(parts[1])
+  if (!Number.isInteger(yaw) || !Number.isInteger(pitch)) return null
+  return { yaw, pitch }
+}
+
+/**
+ * `conversation` is the USB voice link: `isConnected()` reports whether a host is
+ * attached, `start()` asks it to record, and `orient(yaw, pitch)` aims the head.
+ */
+function createAnimationStateMachine(conversation) {
   let state = 'idle'
   let elapsed = 0
-  let randomEnabled = true
-  let visualListener = null
+  let randomEnabled = false
+  const visualListeners = []
   let wakeEnabled = false
   let wakeError = null
   let wakeHitCount = 0
   let lastWakePhrase = null
   let wakeWord = null
+  let chimeSpeaker = null
+  let wakeOrientation = readWakeOrientationPreference()
+  let teamsStatus = { presence: 'available', message: 'WFH' }
+  const teamsStatusListeners = []
+  // A held animation loops until another state is entered; a completion callback
+  // replaces the usual return to idle when a one-shot animation finishes.
+  let heldState = null
+  let stateCompletion = null
 
-  const notifyVisuals = () => visualListener?.(state, elapsed)
+  const notifyVisuals = () => {
+    for (const listener of visualListeners) listener(state, elapsed)
+  }
+
+  const restart = () => {
+    elapsed = 0
+    notifyVisuals()
+  }
 
   const enter = (nextState) => {
+    // Interrupting the wake sequence (a manual animation, say) drops its follow-up,
+    // so put the wake word back rather than leaving it closed for good.
+    const discarded = stateCompletion
+    heldState = null
+    stateCompletion = null
     state = nextState
     elapsed = 0
     notifyVisuals()
+    if (discarded) resumeWake()
+  }
+
+  /**
+   * Plays `name` and runs `done` after `at` milliseconds instead of returning to
+   * idle. `at` defaults to the whole animation; the wake reaction hands over
+   * partway through so the conversation does not wait out the flourish.
+   */
+  const enterOnce = (name, done, at = ANIMATIONS[name].duration) => {
+    enter(name)
+    stateCompletion = { at, done }
+  }
+
+  /** Plays `name` on a loop until some other state is entered. */
+  const hold = (name) => {
+    if (heldState === name && state === name) return status()
+    enter(name)
+    heldState = name
+    return status()
   }
 
   const durationFor = () => ANIMATIONS[state].duration
@@ -206,21 +309,73 @@ function createAnimationStateMachine(onWake) {
     wakeError,
     wakeHitCount,
     lastWakePhrase,
+    wakeOrientation: wakeOrientation ? { ...wakeOrientation } : null,
+    teamsStatus: { ...teamsStatus },
     wakeStats: wakeWord?.stats() ?? null,
+    memory: readMemory(),
   })
+
+  const playWakeChime = () => {
+    try {
+      if (!chimeSpeaker) chimeSpeaker = new Speaker({ volume: WAKE_CHIME_VOLUME })
+      return chimeSpeaker.play(new Resource(WAKE_CHIME_RESOURCE))
+    } catch (error) {
+      trace(`[chymod] wake chime failed: ${error}\n`)
+      return Promise.resolve(false)
+    }
+  }
+
+  const isConversationReady = () => {
+    try {
+      return conversation?.isConnected() === true
+    } catch (error) {
+      trace(`[chymod] conversation transport unavailable: ${error}\n`)
+      return false
+    }
+  }
+
+  const applyWakeOrientation = () => {
+    if (!wakeOrientation) return
+    try {
+      conversation.orient(wakeOrientation.yaw, wakeOrientation.pitch)
+    } catch (error) {
+      trace(`[chymod] wake orientation failed: ${error}\n`)
+    }
+  }
+
+  // Recording starts here, once "happy" has played in full: cutting the reaction
+  // short looked wrong, and by now the chime has released the shared I2S port.
+  const beginListening = () => {
+    hold('listening')
+    try {
+      conversation.start()
+    } catch (error) {
+      wakeError = String(error)
+      enter('idle')
+      resumeWake()
+    }
+  }
+
+  // With no USB host there is nothing to say, so the reaction is the whole response.
+  const endWakeReaction = () => {
+    enter('idle')
+    resumeWake()
+  }
 
   const onWakeDetected = (phrase) => {
     wakeHitCount += 1
     lastWakePhrase = phrase
     wakeWord?.close()
     wakeWord = null
-    enter('happy')
-    try {
-      if (onWake?.() !== true) resumeWake()
-    } catch (error) {
-      wakeError = String(error)
-      resumeWake()
-    }
+    const conversational = isConversationReady()
+    enterOnce('happy', conversational ? beginListening : endWakeReaction, WAKE_REACTION_MILLISECONDS)
+    void playWakeChime()
+    // The move is issued last even though it is the first thing to happen. A servo
+    // command is written immediately and its reply has to be read back by this
+    // machine within 120 ms; starting the chime blocks that long on its own
+    // (amplifier I2C, then AudioOut installing the I2S driver), so a move issued
+    // before it had its reply sitting unread and every wake turn timed out.
+    if (conversational) applyWakeOrientation()
   }
 
   const resumeWake = () => {
@@ -235,6 +390,26 @@ function createAnimationStateMachine(onWake) {
       wakeEnabled = false
       wakeError = String(error)
     }
+    return status()
+  }
+
+  const setWakeOrientation = (value) => {
+    if (value === null || value === undefined) {
+      wakeOrientation = null
+      Preference.delete('chymod', WAKE_ORIENTATION_KEY)
+      return status()
+    }
+    if (typeof value !== 'object') throw new Error('wake orientation must be an object or null')
+    const yaw = readMotionInteger(value.yaw, MOTION_YAW_ANGLE_LIMIT, 'yaw')
+    const pitch = readMotionInteger(value.pitch, MOTION_PITCH_ANGLE_LIMIT, 'pitch')
+    // Either axis left blank means "do not turn on wake", same as clearing it.
+    if (yaw === undefined || pitch === undefined) {
+      wakeOrientation = null
+      Preference.delete('chymod', WAKE_ORIENTATION_KEY)
+      return status()
+    }
+    wakeOrientation = { yaw, pitch }
+    Preference.set('chymod', WAKE_ORIENTATION_KEY, `${yaw},${pitch}`)
     return status()
   }
 
@@ -267,20 +442,46 @@ function createAnimationStateMachine(onWake) {
       if (state === 'idle') elapsed = 0
       return status()
     },
+    setTeamsStatus(value) {
+      if (!value || typeof value !== 'object') throw new Error('Teams status must be an object')
+      const presence = value.presence
+      const message = value.message
+      if (!TEAMS_PRESENCES.includes(presence)) throw new Error('invalid Teams presence')
+      if (typeof message !== 'string') throw new Error('Teams message must be a string')
+      const trimmedMessage = message.trim()
+      if (trimmedMessage.length > 12) throw new Error('Teams message must be 12 characters or fewer')
+      teamsStatus = { presence, message: trimmedMessage }
+      for (const listener of teamsStatusListeners) listener(teamsStatus)
+      enter('teams')
+      return status()
+    },
+    hold,
     resumeWake,
     setWake,
-    setVisualListener(listener) {
-      visualListener = listener
-      notifyVisuals()
+    setWakeOrientation,
+    addVisualListener(listener) {
+      visualListeners.push(listener)
+      listener(state, elapsed)
+    },
+    addTeamsStatusListener(listener) {
+      teamsStatusListeners.push(listener)
+      listener(teamsStatus)
     },
     status,
     tick(tickMillis, face) {
       elapsed += tickMillis
-      if (state === 'idle' && randomEnabled && elapsed >= IDLE_DECISION_MS) {
-        enter(ANIMATION_NAMES[Math.floor(Math.random() * ANIMATION_NAMES.length)])
+      const pending = stateCompletion
+      if (pending && elapsed >= pending.at) {
+        stateCompletion = null
+        pending.done()
+      } else if (state === 'idle' && randomEnabled && elapsed >= IDLE_DECISION_MS) {
+        enter(RANDOM_ANIMATION_NAMES[Math.floor(Math.random() * RANDOM_ANIMATION_NAMES.length)])
       } else {
         const duration = durationFor()
-        if (duration !== null && elapsed >= duration) enter('idle')
+        if (duration !== null && elapsed >= duration) {
+          if (heldState === state) restart()
+          else enter('idle')
+        }
       }
 
       ANIMATIONS[state].apply(face, elapsed)
@@ -504,7 +705,7 @@ function registerChyModControls(machine, motionControl) {
   const withMotion = (result) => ({ ...result, motion: motionControl.status() })
   registerUSBControlNamespace(
     'chymod',
-    ['describe', 'play', 'status', 'random', 'wake', 'motion'],
+    ['describe', 'play', 'status', 'random', 'wake', 'wake-orientation', 'motion', 'teams-status'],
     (command, value) => {
       switch (command) {
         case 'describe':
@@ -515,7 +716,15 @@ function registerChyModControls(machine, motionControl) {
                 id: 'animation',
                 kind: 'actions',
                 command: 'chymod.play',
-                options: ANIMATION_NAMES,
+                options: PLAY_ANIMATION_NAMES,
+              },
+              {
+                id: 'teamsStatus',
+                kind: 'teams-status',
+                command: 'chymod.teams-status',
+                statusKey: 'teamsStatus',
+                presences: TEAMS_PRESENCES,
+                maxLength: 12,
               },
               {
                 id: 'randomEnabled',
@@ -531,6 +740,16 @@ function registerChyModControls(machine, motionControl) {
                 statusKey: 'wakeEnabled',
                 label: 'Enable “Hey Copilot” wake animation',
               },
+              {
+                id: 'wakeOrientation',
+                kind: 'orientation',
+                command: 'chymod.wake-orientation',
+                statusKey: 'wakeOrientation',
+                label: 'Wake up orientation',
+                yaw: MOTION_YAW_ANGLE_LIMIT,
+                pitch: MOTION_PITCH_ANGLE_LIMIT,
+                speed: WAKE_ORIENTATION_SPEED,
+              },
               motionControl.descriptor(),
             ],
           }
@@ -542,6 +761,10 @@ function registerChyModControls(machine, motionControl) {
           return withMotion(machine.setRandom(value))
         case 'wake':
           return withMotion(machine.setWake(value))
+        case 'wake-orientation':
+          return withMotion(machine.setWakeOrientation(value ?? null))
+        case 'teams-status':
+          return withMotion(machine.setTeamsStatus(value))
         case 'motion':
           motionControl.request(value)
           return withMotion(machine.status())
@@ -568,17 +791,29 @@ const CapsuleFace = FaceBase.template(($ = {}) => ({
 
 export function onContextCreated(robot, option) {
   const remoteSession = robot.conversation.remoteSession
-  const machine = createAnimationStateMachine(() => {
-    if (!remoteSession) return false
-    remoteSession.requestStart()
-    return true
+  const motionControl = createMotionControl(robot.motion)
+  const machine = createAnimationStateMachine({
+    isConnected: () => remoteSession?.transportState === 'ready',
+    start: () => remoteSession.requestStart(),
+    orient: (yaw, pitch) =>
+      motionControl.request({
+        yawServo: { angle: yaw, speed: WAKE_ORIENTATION_SPEED },
+        pitchServo: { angle: pitch, speed: WAKE_ORIENTATION_SPEED },
+      }),
   })
-  registerChyModControls(machine, createMotionControl(robot.motion))
+  registerChyModControls(machine, motionControl)
   // A MOD hook replaces the host hook, so preserve the host's USB controls and
   // other standard runtime services before installing the custom face.
   initializeDefaultContext(robot, option)
   robot.ui.setFace(new CapsuleFace({ machine }))
   robot.ui.addEffect(new WorkingEffect({ machine }), 'chymod-working')
+  robot.ui.addEffect(new ListeningEffect({ machine }), 'chymod-listening')
+  robot.ui.addEffect(new SpeakingEffect({ machine }), 'chymod-speaking')
+  robot.ui.addEffect(new TeamsEffect({ machine }), 'chymod-teams')
+  robot.ui.addEffect(new ThinkingEffect({ machine }), 'chymod-thinking')
+  robot.ui.addEffect(new WaitingInputEffect({ machine }), 'chymod-waiting-input')
+  robot.ui.addEffect(new MicrosoftEffect({ machine }), 'chymod-microsoft')
+  robot.ui.addEffect(new RainbowEffect({ machine }), 'chymod-rainbow')
   robot.face.setColor('primary', 0xff, 0xff, 0xff)
   robot.face.setColor('secondary', 0x00, 0x00, 0x00)
   if (remoteSession) {
@@ -586,12 +821,14 @@ export function onContextCreated(robot, option) {
     remoteSession.subscribe((state) => {
       switch (state) {
         case 'listening':
+          machine.hold('listening')
+          break
         case 'recognizing':
-          machine.play('working')
+          // Covers transcription and the wait for Codex, which read as one pause.
+          machine.hold('thinking')
           break
         case 'speaking':
-          // Keep the main VM light while USB speech plays; "happy" stays the wake-word reaction.
-          machine.play('idle')
+          machine.hold('speaking')
           break
         case 'blocked':
           machine.play('angry')

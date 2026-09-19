@@ -8,10 +8,18 @@ import { fileURLToPath } from 'node:url'
 import type { IncomingMessage, ServerResponse } from 'node:http'
 import type { Plugin } from 'vite'
 
+import {
+  logVoiceEvent,
+  logVoiceEvents,
+  readVoiceLogBatch,
+  VOICE_LOG_PATH,
+  type VoiceLogLevel,
+} from './chymod-voice-log'
 import { applyRobotVoice, ROBOT_VOICE_PRESETS, type RobotVoicePreset } from './robot-voice'
 
 const MAX_AUDIO_BYTES = 16 * 1024 * 1024
 const MAX_TEXT_BYTES = 64 * 1024
+const MAX_LOG_BYTES = 1024 * 1024
 const CODEX_MODEL = 'gpt-5.6-luna'
 const SERVER_DIR = fileURLToPath(new URL('.', import.meta.url))
 const WHISPER_WORKER_SCRIPT = join(SERVER_DIR, 'chymod-whisper-worker.py')
@@ -35,7 +43,11 @@ export function chymodVoiceBackend(): Plugin {
   return {
     name: 'chymod-voice-backend',
     configureServer(server) {
-      server.httpServer?.once('close', () => whisperWorker.close())
+      logVoiceEvent({ level: 'info', event: 'backend.started', logPath: VOICE_LOG_PATH })
+      server.httpServer?.once('close', () => {
+        logVoiceEvent({ level: 'info', event: 'backend.stopped' })
+        whisperWorker.close()
+      })
       server.middlewares.use(async (request, response, next) => {
         const path = request.url?.split('?', 1)[0]
         if (!path?.startsWith('/api/chymod/voice/')) {
@@ -48,6 +60,7 @@ export function chymodVoiceBackend(): Plugin {
             void whisperWorker.start().catch(() => undefined)
             sendJson(response, 200, {
               ready: true,
+              logPath: VOICE_LOG_PATH,
               model: CODEX_MODEL,
               whisperModel: 'small',
               whisperDevice: whisperWorker.info?.device ?? 'loading',
@@ -56,24 +69,58 @@ export function chymodVoiceBackend(): Plugin {
             })
             return
           }
+          if (request.method === 'POST' && path === '/api/chymod/voice/log') {
+            const entries = readVoiceLogBatch(await readJson(request, MAX_LOG_BYTES))
+            await logVoiceEvents(entries, 'page')
+            sendJson(response, 200, { accepted: entries.length })
+            return
+          }
           if (request.method === 'POST' && path === '/api/chymod/voice/transcribe') {
             const audio = await readBody(request, MAX_AUDIO_BYTES)
             if (audio.byteLength < 44) throw new HttpError(400, 'Recorded audio is empty.')
+            const startedAt = Date.now()
             const text = await transcribe(audio)
+            logVoiceEvent({
+              level: 'info',
+              event: 'backend.transcribe',
+              milliseconds: Date.now() - startedAt,
+              audioBytes: audio.byteLength,
+              device: whisperWorker.info?.device ?? 'unknown',
+              text,
+            })
             sendJson(response, 200, { text })
             return
           }
           if (request.method === 'POST' && path === '/api/chymod/voice/ask') {
             const body = await readJson(request)
             const text = requiredText(body.text, 'Transcript')
+            const startedAt = Date.now()
             const answer = await askCodex(text)
+            logVoiceEvent({
+              level: 'info',
+              event: 'backend.ask',
+              milliseconds: Date.now() - startedAt,
+              model: CODEX_MODEL,
+              question: text,
+              answer,
+            })
             sendJson(response, 200, { answer, model: CODEX_MODEL })
             return
           }
           if (request.method === 'POST' && path === '/api/chymod/voice/speak') {
             const body = await readJson(request)
             const text = requiredText(body.text, 'Answer')
+            const startedAt = Date.now()
             const audio = await synthesize(text)
+            logVoiceEvent({
+              level: 'info',
+              event: 'backend.speak',
+              milliseconds: Date.now() - startedAt,
+              audioBytes: audio.byteLength,
+              voice: TTS_VOICE,
+              preset: TTS_ROBOT_PRESET,
+              text,
+            })
             response.statusCode = 200
             response.setHeader('Content-Type', 'audio/wav')
             response.setHeader('Cache-Control', 'no-store')
@@ -84,6 +131,15 @@ export function chymodVoiceBackend(): Plugin {
         } catch (error) {
           const status = error instanceof HttpError ? error.status : 500
           const message = error instanceof Error ? error.message : String(error)
+          const level: VoiceLogLevel = status >= 500 ? 'error' : 'warn'
+          logVoiceEvent({
+            level,
+            event: 'backend.request-failed',
+            path,
+            status,
+            message,
+            stack: error instanceof Error ? error.stack : undefined,
+          })
           sendJson(response, status, { error: message })
         }
       })
@@ -206,6 +262,7 @@ class WhisperWorker {
     }
     if (message.type === 'ready') {
       this.device = { device: String(message.device), computeType: String(message.computeType) }
+      logVoiceEvent({ level: 'info', event: 'whisper.ready', ...this.device })
       resolveReady(this.device)
       return
     }
@@ -219,6 +276,7 @@ class WhisperWorker {
   }
 
   private reset(error: Error): void {
+    if (this.child) logVoiceEvent({ level: 'warn', event: 'whisper.stopped', message: error.message })
     this.child = undefined
     this.ready = undefined
     this.device = undefined
@@ -342,8 +400,8 @@ async function synthesize(text: string): Promise<Buffer> {
   }
 }
 
-async function readJson(request: IncomingMessage): Promise<JsonRecord> {
-  const body = await readBody(request, MAX_TEXT_BYTES)
+async function readJson(request: IncomingMessage, limit = MAX_TEXT_BYTES): Promise<JsonRecord> {
+  const body = await readBody(request, limit)
   let value: unknown
   try {
     value = JSON.parse(body.toString('utf8'))

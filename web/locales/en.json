@@ -54,6 +54,8 @@
   "設定項目": "Settings",
   "パスワード": "Password",
   "本体の表示言語": "Device display language",
+  "画面の明るさ": "Display brightness",
+  "設定を保存すると本体へ反映されます。": "Save settings to apply this to the device.",
   "外観": "Appearance",
   "顔の種類": "Face type",
   "シンプル": "Simple",

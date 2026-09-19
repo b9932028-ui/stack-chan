@@ -28,6 +28,23 @@ export enum StackChanControl {
   SPEAKER_TEXT = 37,
 }
 
+/** Mirrors StackChanErrorCode in firmware/host/modules/usb-audio/media-session.ts. */
+export const STACKCHAN_ERROR_NAMES: Record<number, string> = {
+  1: 'invalid request',
+  2: 'invalid stream data',
+  3: 'transport overflow',
+  4: 'audio output failed',
+  5: 'busy',
+  6: 'speaker sequence mismatch',
+  7: 'speaker buffer overflow',
+  8: 'caption queue overflow',
+}
+
+export function describeStackChanError(code: number): string {
+  const name = STACKCHAN_ERROR_NAMES[code]
+  return name ? `Stack-Chan USB Audio error ${code} (${name}).` : `Stack-Chan USB Audio error ${code}.`
+}
+
 export const StackChanCapability = {
   MICROPHONE_PCM: 1 << 0,
   SPEAKER_PCM: 1 << 1,
@@ -97,6 +114,16 @@ export class StackChanFrameParser {
   /** Bytes skipped while resynchronizing; non-frame bytes on the wire show up here. */
   discardedBytes = 0
   crcFailures = 0
+  /**
+   * Receives those skipped bytes. The device's trace output shares this serial
+   * stream with the protocol, so its boot log and crash report arrive here.
+   */
+  onDiscarded?: (bytes: Uint8Array) => void
+
+  private discard(bytes: Uint8Array): void {
+    this.discardedBytes += bytes.byteLength
+    if (bytes.byteLength > 0) this.onDiscarded?.(bytes)
+  }
 
   push(chunk: Uint8Array): StackChanFrame[] {
     const combined = new Uint8Array(this.pending.byteLength + chunk.byteLength)
@@ -108,19 +135,19 @@ export class StackChanFrameParser {
       const offset = this.findMagic()
       if (offset < 0) {
         const keep = Math.max(0, this.pending.byteLength - 1)
-        this.discardedBytes += keep
+        this.discard(this.pending.slice(0, keep))
         this.pending = this.pending.slice(keep)
         break
       }
       if (offset > 0) {
-        this.discardedBytes += offset
+        this.discard(this.pending.slice(0, offset))
         this.pending = this.pending.slice(offset)
       }
       if (this.pending.byteLength < STACKCHAN_HEADER_BYTES + STACKCHAN_CRC_BYTES) break
       const view = new DataView(this.pending.buffer, this.pending.byteOffset, this.pending.byteLength)
       const payloadBytes = view.getUint32(16, true)
       if (view.getUint8(2) !== STACKCHAN_PROTOCOL_VERSION || payloadBytes > STACKCHAN_MAX_PAYLOAD_BYTES) {
-        this.discardedBytes += 1
+        this.discard(this.pending.slice(0, 1))
         this.pending = this.pending.slice(1)
         continue
       }
@@ -131,7 +158,7 @@ export class StackChanFrameParser {
       const expected = bytesView.getUint32(STACKCHAN_HEADER_BYTES + payloadBytes, true)
       if (crc32(bytes, STACKCHAN_HEADER_BYTES + payloadBytes) !== expected) {
         this.crcFailures += 1
-        this.discardedBytes += 1
+        this.discard(this.pending.slice(0, 1))
         this.pending = this.pending.slice(1)
         continue
       }

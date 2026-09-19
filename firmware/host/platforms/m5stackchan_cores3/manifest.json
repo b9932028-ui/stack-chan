@@ -14,6 +14,7 @@
     "setup/m5stackchan-power": "./setup-target",
     "stackchan-sdcard": "./sd-card",
     "stackchan-reset-reason": "./reset-reason",
+    "stackchan-crash-diagnostics": "./crash-diagnostics",
     "pins/audioout-original": "$(MODULES)/pins/i2s/audioout",
     "pins/audioout": "../core_s3_audioout",
     "stackchan-speaker-amp": "./speaker-amp"

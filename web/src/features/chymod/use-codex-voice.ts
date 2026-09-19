@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
 
+import { errorMessage, flushVoiceLog, logVoice } from './voice-log'
 import {
   type RecordingStats,
   USBVoiceClient,
@@ -38,6 +39,7 @@ export function useCodexVoice(onConnectionChanged?: (connected: boolean) => void
 
   const sendConversationState = useCallback(
     async (requestId: string, state: string, success = true, reason?: string) => {
+      logVoice(success ? 'info' : 'warn', 'conversation.state', { requestId, state, success, reason })
       await clientRef.current?.sendApplicationEvent({
         schema: 'stackchan.event.v1',
         type: 'conversation.result',
@@ -60,7 +62,10 @@ export function useCodexVoice(onConnectionChanged?: (connected: boolean) => void
       }
       if (activeRef.current) return
       activeRef.current = true
+      const startedAt = performance.now()
+      const since = () => Math.round(performance.now() - startedAt)
       const sequence = ++conversationSequenceRef.current
+      logVoice('info', 'conversation.start', { requestId, commands: commandsEnabledRef.current })
       const isCurrent = () => conversationSequenceRef.current === sequence
       // Once the device is told the conversation ended, failures stay on this page.
       let conversationEnded = false
@@ -71,6 +76,7 @@ export function useCodexVoice(onConnectionChanged?: (connected: boolean) => void
         setPhase('listening')
         await sendConversationState(requestId, 'listening')
         const audio = await client.recordUtterance()
+        logVoice('info', 'conversation.recorded', { requestId, at: since(), audioBytes: audio.size })
         replaceRecording(audio)
         if (!featureEnabledRef.current) {
           await sendConversationState(requestId, 'blocked', false, 'Voice feature is disabled in the local backend.')
@@ -99,6 +105,7 @@ export function useCodexVoice(onConnectionChanged?: (connected: boolean) => void
         if (typeof transcribeResult.text !== 'string' || !transcribeResult.text.trim())
           throw new Error('No speech was recognized.')
         const text = transcribeResult.text.trim()
+        logVoice('info', 'conversation.transcript', { requestId, at: since(), text })
         if (!isCurrent()) return
         setTranscript(text)
         if (transcriptionOnly) {
@@ -128,6 +135,7 @@ export function useCodexVoice(onConnectionChanged?: (connected: boolean) => void
         if (typeof askResult.answer !== 'string' || !askResult.answer.trim())
           throw new Error('Codex returned an empty answer.')
         const nextAnswer = askResult.answer.trim()
+        logVoice('info', 'conversation.answer', { requestId, at: since(), answer: nextAnswer })
         setAnswer(nextAnswer)
 
         setPhase('speaking')
@@ -146,10 +154,17 @@ export function useCodexVoice(onConnectionChanged?: (connected: boolean) => void
         }
         // No caption: drawing the on-device speech balloon competes with audio playback.
         await client.playWav(await speechResponse.arrayBuffer(), '')
+        logVoice('info', 'conversation.done', { requestId, at: since() })
         setPhase('idle')
         await sendConversationState(requestId, 'standby')
       } catch (cause) {
-        const message = cause instanceof Error ? cause.message : String(cause)
+        const message = errorMessage(cause)
+        logVoice('error', 'conversation.failed', {
+          requestId,
+          at: since(),
+          message,
+          stack: cause instanceof Error ? cause.stack : undefined,
+        })
         if (isCurrent()) {
           setError(message)
           setPhase('error')
@@ -159,6 +174,7 @@ export function useCodexVoice(onConnectionChanged?: (connected: boolean) => void
         }
       } finally {
         if (isCurrent()) activeRef.current = false
+        void flushVoiceLog()
       }
     },
     [replaceRecording, sendConversationState]

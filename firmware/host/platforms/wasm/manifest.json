@@ -20,6 +20,8 @@
   "modules": {
     "*": [
       "../../app/main",
+      "../../app/crash-report",
+      "../../app/display-brightness",
       "../../app/app-behavior",
       "../../app/app-behavior-resolver",
       "../../app/app-launch",

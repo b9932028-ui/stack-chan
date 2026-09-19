@@ -15,6 +15,16 @@ import type { Self } from 'worker'
 
 declare const self: Self
 
+/**
+ * Names this machine when XS aborts it. A release build compiles Moddable's own
+ * abort reporting out, so without this a worker abort restarts the board with
+ * nothing to say which machine ran out. The message is a literal because an
+ * out-of-memory abort cannot allocate a string to build one.
+ */
+;(globalThis as typeof globalThis & { abort?: () => void }).abort = () => {
+  trace('[crash] usb audio worker aborted\n')
+}
+
 let bridge: UsbAudioBridgeControl | undefined
 let inputService: NativeMicrophoneInputService | undefined
 let outputService: SharedSpeakerOutputService | undefined

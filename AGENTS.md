@@ -93,16 +93,25 @@ ChyMOD spans the capsule-face MOD and its browser control page:
 
 Keep the animation state machine inside the MOD so it operates identically with no USB connection. It starts in `idle`; while idle and random playback is enabled, every three seconds it randomly selects one of `idle`, `blink`, `lookAround`, `happy`, `angry`, or `working`. A non-idle animation returns to `idle` when complete and restarts the three-second countdown. A manual animation request interrupts immediately, then follows the same return-to-idle behavior. The `working` animation may use the full-screen effect layer for visuals such as its book and animated bottom status line that must render outside the movable face region.
 
+The wake word runs one fixed sequence, which the MOD owns end to end. With a USB host attached: aim the head at the stored `wakeOrientation` (skipped when none is stored), play the chime and `happy` together, and once `happy` has played in full switch to `listening` and only then ask the host to record. Cutting `happy` short to start recording looked wrong, and the shared I2S port needs the chime to have drained first. The host's conversation states drive the rest: `recognizing` holds `thinking`, `speaking` holds `speaking`, and `standby` returns to `idle`. With no USB host the sequence is just the chime and `happy`. Conversation animations loop while their phase lasts, because a phase outlives any one animation.
+
 USB is an optional control and observation path, not the animation scheduler. Keep host-firmware changes generic: MODs register namespaced commands through the USB control registry, and ChyMOD owns only the `chymod.*` namespace. The current protocol is:
 
 - `chymod.describe`: return the versioned, schema-driven control descriptor
 - `chymod.play`: immediately play one named animation
 - `chymod.status`: return the current animation, elapsed time, duration, random setting, and next decision time
-- `chymod.random`: enable or disable autonomous random playback
+- `chymod.random`: enable or disable autonomous random playback (off by default)
+- `chymod.wake`: enable or disable the "Hey Copilot" wake word
+- `chymod.wake-orientation`: store `{ yaw, pitch }` in tenths of a degree, or `null` for no turn
+- `chymod.teams-status`: show the Teams layout with a presence light and short custom message
+
+Command and namespace names must match `/^[a-z][a-z0-9-]*$/`, which `usb-control-registry.ts` enforces at registration. A camelCase name throws `invalid USB control command` out of `onContextCreated`, and the host then falls back to its default face with no on-screen hint that the MOD failed; the boot trace is where that shows up.
 
 Add future ChyMOD controls through the descriptor and namespaced request/response protocol instead of adding feature-specific switches to the default firmware USB server. Preserve the existing `stackchan-usb-v1` handshake and request IDs so multiple controls can share the serial connection safely.
 
 The web page must render controls from `chymod.describe`, display live state from `chymod.status`, and remain usable when capabilities are unavailable by showing a clear disconnected or unsupported state. For backend/web UI updates, add and maintain English copy only. Do not update Japanese or Simplified Chinese translations unless the user explicitly requests them.
+
+The voice pipeline records itself to `web/logs/chymod-voice.log` (JSON lines, rotated at 4 MB keeping one previous file, gitignored). The backend writes its own timings and failures; the page posts what it sees to `/api/chymod/voice/log`, including device error codes, recording statistics and conversation timings. Read that file when diagnosing a past failure instead of asking for the run to be repeated. It holds transcripts and answers, so it stays on the machine running the dev server.
 
 For device deployment, flash host firmware first only when the generic USB bridge changes. Wait for the ESP32-S3 port to return, then install `capsule_face.xsa` into the discovered `xs` MOD partition. Ordinary face or state-machine changes should use the MOD-only deployment path.
 

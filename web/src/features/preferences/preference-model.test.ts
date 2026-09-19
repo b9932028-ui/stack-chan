@@ -16,4 +16,9 @@ describe('preference model', () => {
     expect(isPreferenceKey('mcp.token')).toBe(true)
     expect(DEFAULT_PREFERENCES['mcp.token']).toBe('')
   })
+
+  it('includes display brightness in the UI preference domain', () => {
+    expect(isPreferenceKey('ui.brightness')).toBe(true)
+    expect(DEFAULT_PREFERENCES['ui.brightness']).toBe('100')
+  })
 })

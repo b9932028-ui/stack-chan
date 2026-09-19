@@ -107,7 +107,12 @@ const PLAYBACK_POWER_NOTIFY_MILLISECONDS = 50
 const SHARED_PCM_PUMP_MILLISECONDS = 10
 
 const USB_AUDIO_WORKER_OPTIONS: UsbAudioWorkerOptions = {
-  static: 192 * 1024,
+  // `static` is the worker's entire memory: the chunk heap, the slot heap and the
+  // stack all come out of it and nothing can be allocated beyond it. At 192 KB the
+  // 128 KB chunk heap plus slots and stack left about 12 KB, so the first 32 KB
+  // chunk growth could not fit and XS aborted the machine — which on a release
+  // build restarts the board silently. Keep room for several growths.
+  static: 320 * 1024,
   chunk: {
     initial: 128 * 1024,
     incremental: 32 * 1024,

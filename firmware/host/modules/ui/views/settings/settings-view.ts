@@ -1,3 +1,4 @@
+import { canonicalizeBrightness } from 'brightness-model'
 import { KeyboardField } from 'common/keyboard'
 import { HorizontalExpandingKeyboard } from 'keyboard'
 import { localize, type SupportedLocale } from 'localization'
@@ -44,6 +45,7 @@ export const SettingsViewId = Object.freeze({
   OFFLINE: 4,
   TIMEZONE: 5,
   VOLUME: 6,
+  BRIGHTNESS: 7,
 } as const)
 
 export type SettingsViewId = (typeof SettingsViewId)[keyof typeof SettingsViewId]
@@ -56,6 +58,7 @@ export type SettingsViewState = Readonly<{
   language: SupportedLocale
   timezone: TimezoneId
   volume: number
+  brightness: number
 }>
 
 export type SettingsViewActions = Readonly<{
@@ -70,6 +73,8 @@ export type SettingsViewActions = Readonly<{
   selectLanguage(locale: SupportedLocale): void
   saveTimezone(timezone: TimezoneId): void
   saveVolume(volume: number): void
+  previewBrightness(brightness: number): void
+  saveBrightness(brightness: number): void
 }>
 
 export type SettingsViewContext = Readonly<{
@@ -293,6 +298,89 @@ class VolumeSliderBehavior extends Behavior {
   }
 }
 
+type BrightnessSliderData = {
+  context: SettingsViewContext
+  valueLabel: PiuContent & { string?: string }
+}
+
+class BrightnessSliderBehavior extends Behavior {
+  data: BrightnessSliderData | null = null
+  committedPercent = 100
+  draftPercent = 100
+  dragging = false
+
+  onCreate(port: PiuPort, data: BrightnessSliderData) {
+    this.data = data
+    this.sync(port, data.context.state.brightness)
+  }
+
+  onTouchBegan(port: PiuPort, _id: number, x: number) {
+    this.dragging = true
+    this.setDraft(port, this.percentForX(port, x), true)
+  }
+
+  onTouchMoved(port: PiuPort, _id: number, x: number) {
+    if (!this.dragging) return
+    this.setDraft(port, this.percentForX(port, x), true)
+  }
+
+  onTouchCancelled(port: PiuPort) {
+    if (!this.dragging) return
+    this.dragging = false
+    this.setDraft(port, this.committedPercent, true)
+  }
+
+  onTouchEnded(port: PiuPort, _id: number, x: number) {
+    if (!this.dragging) return
+    this.setDraft(port, this.percentForX(port, x), true)
+    this.dragging = false
+    if (this.draftPercent === this.committedPercent) return
+    this.committedPercent = this.draftPercent
+    this.data?.context.actions.saveBrightness(this.committedPercent)
+  }
+
+  onDraw(port: PiuPort) {
+    const trackWidth = Math.max(1, port.width - VOLUME_SLIDER_TRACK_INSET * 2)
+    const trackY = Math.floor((port.height - VOLUME_SLIDER_TRACK_HEIGHT) / 2)
+    const fillWidth = Math.round((trackWidth * this.draftPercent) / 100)
+    const knobCenter = VOLUME_SLIDER_TRACK_INSET + fillWidth
+    port.fillColor(UI.colors.border, VOLUME_SLIDER_TRACK_INSET, trackY, trackWidth, VOLUME_SLIDER_TRACK_HEIGHT)
+    if (fillWidth > 0) {
+      port.fillColor(UI.colors.accent, VOLUME_SLIDER_TRACK_INSET, trackY, fillWidth, VOLUME_SLIDER_TRACK_HEIGHT)
+    }
+    port.fillColor(
+      UI.colors.text,
+      knobCenter - Math.floor(VOLUME_SLIDER_KNOB_WIDTH / 2),
+      Math.floor((port.height - VOLUME_SLIDER_KNOB_HEIGHT) / 2),
+      VOLUME_SLIDER_KNOB_WIDTH,
+      VOLUME_SLIDER_KNOB_HEIGHT,
+    )
+  }
+
+  sync(port: PiuPort, brightness: number) {
+    this.committedPercent = canonicalizeBrightness(brightness)
+    if (this.dragging) return
+    this.setDraft(port, this.committedPercent, false)
+  }
+
+  setDraft(port: PiuPort, percent: number, preview: boolean) {
+    const next = canonicalizeBrightness(percent)
+    if (next === this.draftPercent && preview) return
+    this.draftPercent = next
+    if (this.data) {
+      this.data.valueLabel.string = localize('settings.brightnessValue', { percent: next })
+      if (preview) this.data.context.actions.previewBrightness(next)
+    }
+    port.invalidate()
+  }
+
+  percentForX(port: PiuPort, x: number): number {
+    const trackWidth = Math.max(1, port.width - VOLUME_SLIDER_TRACK_INSET * 2)
+    const trackX = x - port.x - VOLUME_SLIDER_TRACK_INSET
+    return Math.max(0, Math.min(100, Math.round((trackX * 100) / trackWidth)))
+  }
+}
+
 const SettingsMenuView = {
   create(context: SettingsViewContext): SettingsViewInstance {
     const styles = uiStyles()
@@ -329,6 +417,14 @@ const SettingsMenuView = {
                 ),
                 new ActionButton(
                   {
+                    icon: 'brightness',
+                    label: localize('settings.brightnessTitle'),
+                    onTap: () => context.actions.navigate(SettingsViewId.BRIGHTNESS),
+                  },
+                  { left: 8, right: 8 },
+                ),
+                new ActionButton(
+                  {
                     icon: 'volume',
                     label: localize('settings.volumeTitle'),
                     onTap: () => context.actions.navigate(SettingsViewId.VOLUME),
@@ -358,6 +454,59 @@ const SettingsMenuView = {
       ],
     })
     return { content }
+  },
+} satisfies SettingsViewDefinition
+
+const SettingsBrightnessView = {
+  create(context: SettingsViewContext): SettingsViewInstance {
+    const styles = uiStyles()
+    const valueLabel = new Label(null, {
+      left: 16,
+      right: 16,
+      top: UI.headerHeight + 18,
+      height: 28,
+      string: localize('settings.brightnessValue', { percent: context.state.brightness }),
+      style: styles.body,
+    })
+    const sliderData: BrightnessSliderData = { context, valueLabel }
+    const slider = new Port(sliderData, {
+      left: 12,
+      right: 12,
+      top: UI.headerHeight + 58,
+      height: 52,
+      active: true,
+      Behavior: BrightnessSliderBehavior,
+    }) as PiuPort
+    const content = new Container(null, {
+      left: 0,
+      right: 0,
+      top: 0,
+      bottom: 0,
+      skin: styles.screen,
+      contents: [
+        new ScreenHeader({
+          title: localize('settings.brightnessTitle'),
+          leading: 'back',
+          onLeading: () => context.actions.navigate(SettingsViewId.MENU),
+        }),
+        valueLabel,
+        slider,
+        new Label(null, {
+          left: 16,
+          right: 16,
+          top: UI.headerHeight + 126,
+          height: 40,
+          string: localize('settings.brightnessHint'),
+          style: styles.bodyMuted,
+        }),
+      ],
+    })
+    return {
+      content,
+      update() {
+        ;(slider.behavior as BrightnessSliderBehavior).sync(slider, context.state.brightness)
+      },
+    }
   },
 } satisfies SettingsViewDefinition
 
@@ -843,6 +992,7 @@ export const settingsViews: readonly SettingsViewDefinition[] = [
   SettingsOfflineView,
   SettingsTimezoneView,
   SettingsVolumeView,
+  SettingsBrightnessView,
 ]
 
 type SkinTemplate = PiuSkinConstructor & { new (): PiuSkin }

@@ -1,6 +1,7 @@
 import type { SerialNavigator, SerialPortLike } from '@/services/preferences/serial-preference-client'
 
 import {
+  describeStackChanError,
   encodeStackChanFrame,
   pcm16Rms,
   pcm16ToWav,
@@ -14,6 +15,7 @@ import {
   WEB_VOICE_CAPABILITIES,
   type StackChanFrame,
 } from './usb-audio-protocol'
+import { errorMessage, logVoice } from './voice-log'
 
 type ControlWaiter = {
   control: StackChanControl
@@ -54,6 +56,12 @@ const RECORDING_LIMIT_MILLISECONDS = 15_000
 // CoreS3's raw microphone level is quiet: the captured diagnostic utterance
 // had a speech RMS around 400-675 and an idle floor around 60-115.
 const SPEECH_RMS_THRESHOLD = 180
+// Enough to hold a partial trace line while the protocol resynchronises.
+const DEVICE_TEXT_LIMIT = 4096
+const DEVICE_LINE_BREAK = /[\r\n]/
+const DEVICE_UNPRINTABLE = /[^\x20-\x7e]/g
+const DEVICE_FATAL_TRACE = /XS abort|\[crash\]|rst:0x|ESP-ROM|Guru Meditation|abort\(\)|Backtrace/
+const MIN_DEVICE_LINE_LENGTH = 6
 
 export class USBVoiceClient {
   onStateChanged?: (state: VoiceTransportState) => void
@@ -67,6 +75,7 @@ export class USBVoiceClient {
   private closing = false
   private sendTail: Promise<void> = Promise.resolve()
   private parser = new StackChanFrameParser()
+  private deviceText = ''
   private eventCodec = new StackChanEventCodec()
   private encoder = new TextEncoder()
   private decoder = new TextDecoder()
@@ -95,6 +104,10 @@ export class USBVoiceClient {
     crcFailuresAtStart: number
   }
   private speaker?: { streamId: number; credit: number; sequence: number; wakeCredit?: () => void }
+  // The device reports why a stream died, but the teardown races the await that
+  // would have surfaced it. Keep the reason so the caller reports it instead of
+  // the generic "ended unexpectedly".
+  private lastTransportError?: Error
 
   async connect(authorizedPort?: SerialPortLike): Promise<void> {
     if (this.state !== 'disconnected') return
@@ -108,6 +121,7 @@ export class USBVoiceClient {
       this.port = port
       this.closing = false
       this.reader = port.readable.getReader()
+      this.parser.onDiscarded = (bytes) => this.collectDeviceText(bytes)
       this.readTask = this.readLoop()
       const helloAck = this.waitForControl(StackChanControl.HELLO_ACK, undefined, 5000)
       const payload = new Uint8Array(8)
@@ -161,6 +175,7 @@ export class USBVoiceClient {
   async recordUtterance(): Promise<Blob> {
     this.requireReady()
     if (this.microphone) throw new Error('Microphone capture is already active.')
+    this.lastTransportError = undefined
     const streamId = this.nextStreamId()
     const started = this.waitForControl(StackChanControl.MIC_STARTED, streamId, 5000)
     this.microphone = {
@@ -200,7 +215,11 @@ export class USBVoiceClient {
       }, 100)
     })
     const microphone = this.microphone
-    if (!microphone) throw new Error('Microphone capture ended unexpectedly.')
+    if (!microphone)
+      throw this.logStreamFailure(
+        'usb.microphone-failed',
+        this.takeTransportError('Microphone capture ended unexpectedly.')
+      )
     const stopped = this.waitForControl(StackChanControl.MIC_STOPPED, streamId, 5000)
     microphone.stopSentAt = performance.now()
     await this.sendControl(StackChanControl.MIC_STOP, streamId, STACKCHAN_MICROPHONE_SAMPLE_RATE)
@@ -236,13 +255,22 @@ export class USBVoiceClient {
       parserCrcFailures: this.parser.crcFailures - microphone.crcFailuresAtStart,
     }
     console.info('[chymod] microphone recording stats', stats)
+    logVoice('info', 'usb.recording-stats', { ...stats })
     this.onRecordingStats?.(stats)
   }
 
   async playWav(wav: ArrayBuffer, caption: string): Promise<void> {
     this.requireReady()
     const { sampleRate, pcm } = readPcm16Wav(new Uint8Array(wav))
+    this.lastTransportError = undefined
+    const startedAt = performance.now()
     const streamId = this.nextStreamId()
+    logVoice('info', 'usb.speaker-start', {
+      streamId,
+      sampleRate,
+      pcmBytes: pcm.byteLength,
+      audioMilliseconds: Math.round((pcm.byteLength * 1000) / (sampleRate * 2)),
+    })
     this.speaker = { streamId, credit: 0, sequence: 0 }
     const done = this.waitForControl(StackChanControl.SPEAKER_DONE, streamId, 60_000)
     await this.sendControl(StackChanControl.SPEAKER_START, streamId, sampleRate)
@@ -253,7 +281,11 @@ export class USBVoiceClient {
     while (offset < pcm.byteLength) {
       await this.waitForSpeakerCredit()
       const speaker = this.speaker
-      if (!speaker || speaker.streamId !== streamId) throw new Error('Speaker playback ended unexpectedly.')
+      if (!speaker || speaker.streamId !== streamId)
+        throw this.logStreamFailure(
+          'usb.speaker-failed',
+          this.takeTransportError('Speaker playback ended unexpectedly.')
+        )
       const size = Math.min(STACKCHAN_MAX_PAYLOAD_BYTES, speaker.credit, pcm.byteLength - offset)
       if (size <= 0) continue
       await this.sendFrame({
@@ -268,6 +300,11 @@ export class USBVoiceClient {
     }
     await this.sendControl(StackChanControl.SPEAKER_END, streamId, sampleRate)
     await done
+    logVoice('info', 'usb.speaker-done', {
+      streamId,
+      milliseconds: Math.round(performance.now() - startedAt),
+      audioMilliseconds: Math.round((pcm.byteLength * 1000) / (sampleRate * 2)),
+    })
     this.speaker = undefined
   }
 
@@ -336,7 +373,15 @@ export class USBVoiceClient {
           frame.payload?.byteLength === 4
             ? new DataView(frame.payload.buffer, frame.payload.byteOffset, 4).getUint32(0, true)
             : 0
-        this.failAll(new Error(`Stack-Chan USB Audio error ${code}.`))
+        logVoice('error', 'usb.device-error', {
+          code,
+          message: describeStackChanError(code),
+          streamId: frame.streamId,
+          speakerStreamId: this.speaker?.streamId,
+          speakerSentBytes: this.speaker ? this.speaker.sequence : undefined,
+          microphoneActive: Boolean(this.microphone),
+        })
+        this.failAll(new Error(describeStackChanError(code)))
         return
       }
       this.resolveWaiters(frame)
@@ -460,7 +505,15 @@ export class USBVoiceClient {
     })
   }
 
+  /** Returns the reason the active stream was torn down, if the device gave one. */
+  private takeTransportError(fallback: string): Error {
+    const error = this.lastTransportError
+    this.lastTransportError = undefined
+    return error ?? new Error(fallback)
+  }
+
   private failAll(error: Error): void {
+    this.lastTransportError = error
     for (const waiter of this.waiters) {
       clearTimeout(waiter.timeout)
       waiter.reject(error)
@@ -489,9 +542,44 @@ export class USBVoiceClient {
     return this.streamSequence
   }
 
+  private logStreamFailure(event: string, error: unknown): Error {
+    const failure = error instanceof Error ? error : new Error(String(error))
+    logVoice('error', event, { message: errorMessage(failure) })
+    return failure
+  }
+
+  /**
+   * The device shares this serial stream between the protocol and its own trace
+   * output, so anything the parser skips may be a log line. Collect complete
+   * lines of readable text and drop the rest: a boot banner or an XS abort
+   * report is exactly what is needed after the board restarts mid-conversation.
+   */
+  private collectDeviceText(bytes: Uint8Array): void {
+    let text = ''
+    for (const byte of bytes) text += String.fromCharCode(byte)
+    this.deviceText = (this.deviceText + text).slice(-DEVICE_TEXT_LIMIT)
+    let newline = this.deviceText.search(DEVICE_LINE_BREAK)
+    while (newline >= 0) {
+      const line = this.deviceText.slice(0, newline)
+      this.deviceText = this.deviceText.slice(newline + 1)
+      this.reportDeviceLine(line)
+      newline = this.deviceText.search(DEVICE_LINE_BREAK)
+    }
+  }
+
+  private reportDeviceLine(line: string): void {
+    // Frame payloads land here too while the parser resynchronises, so keep only
+    // runs that read as text.
+    const readable = line.replace(DEVICE_UNPRINTABLE, '')
+    if (readable.length < MIN_DEVICE_LINE_LENGTH || readable.length < line.length / 2) return
+    const fatal = DEVICE_FATAL_TRACE.test(readable)
+    logVoice(fatal ? 'error' : 'info', 'device.trace', { text: readable })
+  }
+
   private setState(state: VoiceTransportState): void {
     if (this.state === state) return
     this.state = state
+    logVoice('info', 'usb.transport', { state })
     this.onStateChanged?.(state)
   }
 }

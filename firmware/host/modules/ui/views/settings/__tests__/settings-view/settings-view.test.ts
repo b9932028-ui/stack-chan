@@ -47,6 +47,7 @@ const status: SettingsStatus = {
   'wifi.ssid': 'stackchan-ap',
   'wifi.password': 'secret',
   'tts.volume': 0.35,
+  'ui.brightness': 70,
 }
 const state = {
   status,
@@ -55,6 +56,7 @@ const state = {
   language: 'ja' as const,
   timezone: 'tokyo' as const,
   volume: 0.35,
+  brightness: 70,
 }
 let navigatedView = -1
 let exitCount = 0
@@ -68,6 +70,9 @@ let selectedLanguage = ''
 let selectedTimezone = ''
 let selectedVolume = -1
 let volumeSaveCount = 0
+let selectedBrightness = -1
+let brightnessPreviewCount = 0
+let brightnessSaveCount = 0
 
 const context: SettingsViewContext = {
   state,
@@ -106,6 +111,14 @@ const context: SettingsViewContext = {
       selectedVolume = volume
       volumeSaveCount += 1
     },
+    previewBrightness(brightness) {
+      selectedBrightness = brightness
+      brightnessPreviewCount += 1
+    },
+    saveBrightness(brightness) {
+      selectedBrightness = brightness
+      brightnessSaveCount += 1
+    },
   },
 }
 
@@ -117,8 +130,8 @@ function mount(instance: SettingsViewInstance) {
 
 equal(
   settingsViews.length,
-  7,
-  'settings registry should contain menu, Wi-Fi, password, language, offline, time zone, and volume views',
+  8,
+  'settings registry should contain menu, Wi-Fi, password, language, offline, time zone, volume, and brightness views',
 )
 
 const menuView = settingsViews[SettingsViewId.MENU].create(context)
@@ -129,7 +142,10 @@ const menuItems = menuScroller.first as PiuContainer
 const wifiMenuItem = menuItems.first as Touchable
 press(wifiMenuItem)
 equal(navigatedView, SettingsViewId.WIFI, 'Wi-Fi menu item should navigate through the shared action')
-const volumeMenuItem = wifiMenuItem.next as Touchable
+const brightnessMenuItem = wifiMenuItem.next as Touchable
+press(brightnessMenuItem)
+equal(navigatedView, SettingsViewId.BRIGHTNESS, 'brightness menu item should navigate through the shared action')
+const volumeMenuItem = brightnessMenuItem.next as Touchable
 press(volumeMenuItem)
 equal(navigatedView, SettingsViewId.VOLUME, 'volume menu item should navigate through the shared action')
 const timezoneMenuItem = volumeMenuItem.next as Touchable
@@ -176,6 +192,22 @@ equal(volumeLabel.string, '音量: 25%', 'external volume changes should refresh
 equal(volumeSaveCount, 1, 'external volume changes should not invoke the local save action')
 press(volumeHeader.first as Touchable)
 equal(navigatedView, SettingsViewId.MENU, 'volume back button should return to settings')
+
+const brightnessView = settingsViews[SettingsViewId.BRIGHTNESS].create(context)
+mount(brightnessView)
+const brightnessHeader = brightnessView.content.first as PiuContainer
+const brightnessLabel = brightnessHeader.next as PiuContent & { string?: string }
+const brightnessSlider = brightnessLabel.next as VolumeSlider
+equal(brightnessLabel.string, '明るさ: 70%', 'brightness view should show the persisted value')
+const brightnessLeft = brightnessSlider.x - 100
+brightnessSlider.behavior.onTouchBegan(brightnessSlider, 0, brightnessLeft, 0)
+equal(selectedBrightness, 0, 'dragging brightness should preview the selected percentage')
+equal(brightnessPreviewCount, 1, 'brightness preview should run while dragging')
+equal(brightnessSaveCount, 0, 'brightness preview should not persist intermediate values')
+brightnessSlider.behavior.onTouchEnded(brightnessSlider, 0, brightnessLeft, 0)
+equal(brightnessSaveCount, 1, 'releasing the brightness slider should persist once')
+press(brightnessHeader.first as Touchable)
+equal(navigatedView, SettingsViewId.MENU, 'brightness back button should return to settings')
 
 const wifiView = settingsViews[SettingsViewId.WIFI].create(context)
 mount(wifiView)

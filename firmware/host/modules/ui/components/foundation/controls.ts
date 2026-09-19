@@ -5,6 +5,7 @@ import { UI, uiStyles } from 'ui-theme'
 export type IconName =
   | 'apps'
   | 'back'
+  | 'brightness'
   | 'camera'
   | 'check'
   | 'close'
@@ -183,6 +184,17 @@ function drawIcon(port: PiuPort, icon: IconName, color: string) {
       port.fillColor(color, cx - 5, cy - 7, 4, 15)
       port.fillColor(color, cx + 2, cy - 4, 3, 9)
       port.fillColor(color, cx + 7, cy - 7, 3, 15)
+      return
+    case 'brightness':
+      port.fillColor(color, cx - 5, cy - 5, 11, 11)
+      for (const [x, y, width, height] of [
+        [cx - 1, cy - 11, 3, 4],
+        [cx - 1, cy + 8, 3, 4],
+        [cx - 11, cy - 1, 4, 3],
+        [cx + 8, cy - 1, 4, 3],
+      ] as const) {
+        port.fillColor(color, x, y, width, height)
+      }
       return
     case 'palette':
       port.fillColor('#ef6262', cx - 8, cy - 7, 7, 7)

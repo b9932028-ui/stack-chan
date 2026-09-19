@@ -125,6 +125,9 @@
       "volume-model": [
         "./host/modules/preferences/volume-model.ts"
       ],
+      "brightness-model": [
+        "./host/modules/preferences/brightness-model.ts"
+      ],
       "volume-preview": [
         "./host/app/volume-preview.ts"
       ],

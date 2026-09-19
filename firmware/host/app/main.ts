@@ -7,6 +7,8 @@ import { type BootWiFiStatus, startHostBootServices } from 'boot-services'
 import type { StackchanContext } from 'capabilities'
 import { createStackchanContext, getHostDeviceEnvironment } from 'compose'
 import { DOMAIN } from 'consts'
+import { installCrashReporter, reportLastCrash } from 'crash-report'
+import { applyDisplayBrightness } from 'display-brightness'
 import { type StackchanDockRuntime, startStackchanDock } from 'dock'
 import { prepareExperimentalMiniApps, registerExperimentalMiniApps } from 'experimental-mini-app-loader'
 import { initializeLocalization } from 'localization'
@@ -98,10 +100,15 @@ async function main() {
   let dockRuntime: StackchanDockRuntime | undefined
   let context: StackchanContext | undefined
   try {
+    // Before anything else can abort: a release build restarts silently otherwise.
+    installCrashReporter()
+    reportLastCrash()
     dockRuntime = startStackchanDock(Modules, loadModConfig())
     if (dockRuntime) trace('[main] Stackchan Dock started\n')
     installPlatformInputBridge()
-    initializeLocalization(loadPreferences(DOMAIN.ui).language)
+    const uiPreferences = loadPreferences(DOMAIN.ui)
+    applyDisplayBrightness(uiPreferences.brightness)
+    initializeLocalization(uiPreferences.language)
     applyTimezone(loadPreferences(DOMAIN.time).timezone)
 
     trace('[main] loading app behaviors\n')
